@@ -29,6 +29,7 @@ import { DiscordNotifier, runDiscordSetup, saveDiscordDisabled } from './notific
 import { formatDailyReport } from './notifications/dailyReport.js';
 import { MAX_IDLE_GAMES, IS_HEADLESS } from './constants.js';
 import { createSpinner } from './ui/spinner.js';
+import { computeSelection } from './selection.js';
 import type { SteamGame, GameSelection, IdlingGame, LoginResult } from './types/index.js';
 
 const KNOWN_FLAGS = ['--headless', '--setup-discord', '--logout', '--help', '-h', '--version', '-v'];
@@ -1035,66 +1036,17 @@ async function enterEditMode(): Promise<void> {
   if (newSelection.length === 0) {
     showError('No games selected - keeping current selection');
   } else {
-    const oldAppIds = new Set(
-      [...idlingGames, ...pausedGames, ...pausingGames].map((g) => g.appid)
+    const next = computeSelection(
+      { idling: idlingGames, pausing: pausingGames, paused: pausedGames },
+      newSelection,
+      newExemptAppId,
+      (sel, isExempt) => createIdlingGame(sel, gamesById.get(sel.appid), isExempt),
+      randomIdlePhaseMs,
+      new Date()
     );
-    const newAppIds = new Set(newSelection.map((g) => g.appid));
-
-    const applyExemptChange = (game: IdlingGame): void => {
-      const shouldBeExempt = game.appid === newExemptAppId;
-      const wasExempt = game.nextPauseAtMs === null;
-      if (shouldBeExempt && !wasExempt) {
-        game.nextPauseAtMs = null;
-        game.pauseUntil = null;
-      } else if (!shouldBeExempt && wasExempt) {
-        game.nextPauseAtMs = game.accumulatedMs + randomIdlePhaseMs();
-      }
-    };
-
-    const keptIdlingGames: IdlingGame[] = [];
-    const keptPausedGames: IdlingGame[] = [];
-    const keptPausingGames: IdlingGame[] = [];
-
-    // Kept idling games keep their running clock: the selector time was idled
-    // too. A block or disconnect that landed meanwhile already owns startTime.
-    for (const game of idlingGames) {
-      if (newAppIds.has(game.appid)) {
-        applyExemptChange(game);
-        keptIdlingGames.push(game);
-      }
-    }
-
-    for (const game of pausedGames) {
-      if (newAppIds.has(game.appid)) {
-        applyExemptChange(game);
-        keptPausedGames.push(game);
-      }
-    }
-
-    for (const game of pausingGames) {
-      if (newAppIds.has(game.appid)) {
-        applyExemptChange(game);
-        // Becoming exempt clears pauseUntil — game rejoins idling immediately
-        if (game.nextPauseAtMs === null) {
-          game.startTime = new Date();
-          keptIdlingGames.push(game);
-        } else {
-          keptPausingGames.push(game);
-        }
-      }
-    }
-
-    for (const selection of newSelection) {
-      if (!oldAppIds.has(selection.appid)) {
-        const steamGame = gamesById.get(selection.appid);
-        const isExempt = selection.appid === newExemptAppId;
-        keptIdlingGames.push(createIdlingGame(selection, steamGame, isExempt));
-      }
-    }
-
-    idlingGames = keptIdlingGames;
-    pausedGames = keptPausedGames;
-    pausingGames = keptPausingGames;
+    idlingGames = next.idling;
+    pausedGames = next.paused;
+    pausingGames = next.pausing;
     exemptAppId = newExemptAppId;
   }
 
