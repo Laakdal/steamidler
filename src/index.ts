@@ -32,6 +32,7 @@ import { formatDailyReport } from './notifications/dailyReport.js';
 import { MAX_IDLE_GAMES, IS_HEADLESS } from './constants.js';
 import { createSpinner } from './ui/spinner.js';
 import { computeSelection } from './selection.js';
+import type { ControlPanel, SelectedGameView } from './discord/commands.js';
 import type { SteamGame, GameSelection, IdlingGame, LoginResult } from './types/index.js';
 
 const KNOWN_FLAGS = ['--headless', '--setup-discord', '--logout', '--help', '-h', '--version', '-v'];
@@ -1084,6 +1085,78 @@ async function enterEditMode(): Promise<void> {
   // keep the clocks frozen and let restoreIdling restart the loop.
   if (!isWaitingForResume) startDisplayLoop();
 }
+
+// Applies a changed selection from the Discord commands exactly as edit mode does.
+function applyRemoteSelection(newSelection: GameSelection[], newExemptAppId: number | null): void {
+  if (!playingBlocked) bankElapsed(idlingGames);
+  const next = computeSelection(
+    { idling: idlingGames, pausing: pausingGames, paused: pausedGames },
+    newSelection,
+    newExemptAppId,
+    (sel, isExempt) => createIdlingGame(sel, gamesById.get(sel.appid), isExempt),
+    randomIdlePhaseMs,
+    new Date()
+  );
+  idlingGames = next.idling;
+  pausedGames = next.paused;
+  pausingGames = next.pausing;
+  exemptAppId = newExemptAppId;
+  if (!isWaitingForResume) client.setGamesPlaying(idlingGames.map((g) => g.appid));
+  if (!isInEditMode) renderStatus();
+}
+
+// What the Discord bot may see and do; Task 7b hands it to the bot client.
+const controlPanel: ControlPanel = {
+  // Reports why a remote change is unsafe right now, or null when it is fine.
+  busyReason(): string | null {
+    if (isShuttingDown) return 'steamidled is shutting down.';
+    if (!startTime) return "Idling hasn't started yet.";
+    if (isInEditMode) return 'The game selector is open on the PC — try again after closing it.';
+    if (isWaitingForResume) {
+      return `Disconnected from Steam (${waitingReason}) — try again after it reconnects.`;
+    }
+    return null;
+  },
+  // Exposes the disconnect reason, or null while connected.
+  waitingReason(): string | null {
+    return isWaitingForResume ? waitingReason : null;
+  },
+  // Lists the owned games the commands may offer.
+  library(): { appid: number; name: string }[] {
+    return allGames.map((g) => ({ appid: g.appid, name: g.name }));
+  },
+  // Maps the three internal arrays to the read-only view the bot renders.
+  selection(): SelectedGameView[] {
+    const view = (g: IdlingGame, state: SelectedGameView['state']): SelectedGameView => ({
+      appid: g.appid,
+      name: g.name,
+      state,
+      exempt: g.nextPauseAtMs === null,
+      cooldownEndsAt: state === 'cooldown' ? g.pauseUntil : null,
+    });
+    return [
+      ...idlingGames.map((g) => view(g, 'idling')),
+      ...pausingGames.map((g) => view(g, 'cooldown')),
+      ...pausedGames.map((g) => view(g, 'paused')),
+    ];
+  },
+  // Adds a library game to the live selection; unknown or already-selected ids are ignored.
+  add(appid: number): void {
+    const game = gamesById.get(appid);
+    const current = getGameCurrentSelection();
+    if (!game || current.some((g) => g.appid === appid)) return;
+    applyRemoteSelection([...current, { appid, name: game.name }], exemptAppId);
+  },
+  // Drops a game from the live selection, clearing exempt if it held it; unselected ids are ignored.
+  remove(appid: number): void {
+    const current = getGameCurrentSelection();
+    if (!current.some((g) => g.appid === appid)) return;
+    applyRemoteSelection(
+      current.filter((g) => g.appid !== appid),
+      exemptAppId === appid ? null : exemptAppId
+    );
+  },
+};
 
 // Moves user-paused games back into rotation once the block is over. A game
 // whose idle phase was interrupted keeps its accumulated-time threshold (the
