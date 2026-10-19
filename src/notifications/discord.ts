@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { password as passwordPrompt } from '@inquirer/prompts';
 import chalk from 'chalk';
 import { writeFileAtomic } from '../storage/atomicWrite.js';
+import { parseWebhookUrl } from '../discord/config.js';
+import { escapeMarkdown, splitMessage } from '../discord/format.js';
 
 const CONFIG_DIR = join(homedir(), '.steam-idler');
 const CONFIG_PATH = join(CONFIG_DIR, 'discord.json');
@@ -13,14 +15,10 @@ export interface DiscordConfig {
   disabled?: boolean;
 }
 
-// Discord rejects message content longer than this
-const MAX_CONTENT_LENGTH = 2000;
 const SEND_TIMEOUT_MS = 5000;
 const SETUP_FETCH_TIMEOUT_MS = 10_000;
 // SUPPRESS_EMBEDS: a URL inside an error message must not unfurl into a preview
 const FLAG_SUPPRESS_EMBEDS = 1 << 2;
-const WEBHOOK_HOSTS = new Set(['discord.com', 'discordapp.com', 'canary.discord.com', 'ptb.discord.com']);
-const WEBHOOK_PATH = /^\/api\/(?:v\d+\/)?webhooks\/\d+\/[\w-]+\/?$/;
 
 function ensureConfigDir(): void {
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
@@ -67,59 +65,6 @@ function writeDiscordConfig(config: DiscordConfig): void {
 // Marks Discord as explicitly skipped so we don't re-prompt on next interactive run
 export function saveDiscordDisabled(): void {
   writeDiscordConfig({ disabled: true });
-}
-
-// Accepts only https Discord webhook URLs, so a typo or a pasted lookalike can
-// never send idling updates to another host. Returns a URL rebuilt from the
-// validated parts (only thread_id survives from the query, for forum channels),
-// or null when the input is not a webhook URL.
-export function parseWebhookUrl(raw: string): string | null {
-  let url: URL;
-  try {
-    url = new URL(raw.trim());
-  } catch {
-    return null;
-  }
-  if (url.protocol !== 'https:' || url.port || url.username || url.password) return null;
-  if (!WEBHOOK_HOSTS.has(url.hostname) || !WEBHOOK_PATH.test(url.pathname)) return null;
-  const threadId = url.searchParams.get('thread_id');
-  if (threadId !== null && !/^\d+$/.test(threadId)) return null;
-  const base = `https://${url.hostname}${url.pathname.replace(/\/$/, '')}`;
-  return threadId ? `${base}?thread_id=${threadId}` : base;
-}
-
-// Every message is meant as plain text, but Discord renders markdown and masked
-// links, so a game name or error string could otherwise format or link itself.
-// Inline markers are escaped everywhere; heading, list and quote markers only
-// act at the start of a line, so they are escaped only there.
-export function escapeMarkdown(text: string): string {
-  return text.replace(/[\\*_~`|[\]]/g, '\\$&').replace(/^(\s*)([#>-])/gm, '$1\\$2');
-}
-
-// Splits text into chunks Discord accepts, breaking at line boundaries where
-// possible so a long daily report arrives as consecutive readable messages.
-export function splitMessage(text: string, max = MAX_CONTENT_LENGTH): string[] {
-  const chunks: string[] = [];
-  let current = '';
-  for (const line of text.split('\n')) {
-    let rest = line;
-    while (rest.length > max) {
-      if (current) chunks.push(current);
-      current = '';
-      chunks.push(rest.slice(0, max));
-      rest = rest.slice(max);
-    }
-    const candidate = current ? `${current}\n${rest}` : rest;
-    if (candidate.length > max) {
-      chunks.push(current);
-      current = rest;
-    } else {
-      current = candidate;
-    }
-  }
-  if (current) chunks.push(current);
-  // Discord rejects empty or whitespace-only content
-  return chunks.filter((c) => c.trim().length > 0);
 }
 
 // One webhook post. allowed_mentions with no parse types keeps a game name
