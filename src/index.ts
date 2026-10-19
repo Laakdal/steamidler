@@ -25,7 +25,9 @@ import {
 } from './ui/display.js';
 import { loadFavorites, loadExempt } from './storage/favorites.js';
 import { loadCredentials, saveCredentials } from './storage/credentials.js';
-import { DiscordNotifier, runDiscordSetup, saveDiscordDisabled } from './notifications/discord.js';
+import { DiscordNotifier } from './discord/notifier.js';
+import { runDiscordSetup } from './discord/setup.js';
+import { saveDiscordDisabled } from './discord/config.js';
 import { formatDailyReport } from './notifications/dailyReport.js';
 import { MAX_IDLE_GAMES, IS_HEADLESS } from './constants.js';
 import { createSpinner } from './ui/spinner.js';
@@ -665,6 +667,15 @@ function scheduleZombieCheck(): void {
   }, ZOMBIE_CHECK_INTERVAL_MS);
 }
 
+// Tells the user once per run when Discord is webhook-only, so a missing bot is never a surprise
+function announceWebhookOnly(): void {
+  if (discord.isConfigured() && !discord.botConfig()) {
+    console.log(
+      'Discord: notifications only (webhook). Run --setup-discord to add the bot for /add, /remove and /status.'
+    );
+  }
+}
+
 // Prints CLI usage
 function showHelp(): void {
   console.log(`steamidled — Steam game idler CLI and daemon
@@ -672,7 +683,7 @@ function showHelp(): void {
 Usage:
   steamidled                   Interactive mode (login, pick games, idle)
   steamidled --headless        Headless mode: auto-login and idle your favorites
-  steamidled --setup-discord   (Re)configure Discord notifications
+  steamidled --setup-discord   (Re)configure the Discord bot and backup webhook
   steamidled --logout          Forget the saved Steam login
   steamidled --version, -v     Print version
   steamidled --help, -h        Show this help
@@ -799,6 +810,7 @@ async function runHeadless(): Promise<void> {
     );
   }
   accountName = loginResult.accountName!;
+  announceWebhookOnly();
 
   const gamesSpinner = createSpinner('Fetching your game library...').start();
   try {
@@ -888,6 +900,7 @@ async function runInteractive(): Promise<void> {
     }
     discord.reload();
   }
+  announceWebhookOnly();
 
   const spinner = createSpinner('Fetching your game library...').start();
   try {
