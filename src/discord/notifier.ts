@@ -67,7 +67,7 @@ export class DiscordNotifier {
     return this.config && !this.config.disabled ? this.config.bot : null;
   }
 
-  // Never rejects and is time-bounded (each part: bot timeout + webhook timeout),
+  // Never rejects and is time-bounded (each part: bot timeout + one shared webhook timeout),
   // so shutdown paths can await it. Parts go out sequentially to keep order.
   async send(text: string): Promise<void> {
     try {
@@ -82,6 +82,12 @@ export class DiscordNotifier {
 
   // Called when the bot cannot work; announces once per outage via the webhook
   async botDown(reason: string, fatal: boolean): Promise<void> {
+    await this.markDown(reason, fatal);
+  }
+
+  // Shared by botDown and the failover path; deadline (ms epoch) caps the
+  // webhook time so the notice and the failed part share one webhook budget.
+  private async markDown(reason: string, fatal: boolean, deadline?: number): Promise<void> {
     try {
       if (!this.isConfigured() || !this.botConfig()) return;
       if (this.route === 'fatal') return;
@@ -91,9 +97,10 @@ export class DiscordNotifier {
         return;
       }
       this.route = fatal ? 'fatal' : 'down';
-      await this.send(
-        `⚠️ Discord bot offline (${reason}). Notifications are coming through the backup webhook. /add, /remove and /status won't work until the bot is back.`
-      );
+      const notice = `⚠️ Discord bot offline (${reason}). Notifications are coming through the backup webhook. /add, /remove and /status won't work until the bot is back.`;
+      for (const part of splitMessage(escapeMarkdown(notice))) {
+        await this.deliverViaWebhook(part, deadline);
+      }
     } catch (err) {
       console.error(`[discord] send failed: ${(err as Error).message}`);
     }
@@ -135,7 +142,11 @@ export class DiscordNotifier {
         const failure = err as PostFailure;
         console.error(`[discord] bot post failed: ${failure.message}`);
         const reason = failure.status === undefined ? null : this.reasonForStatus(failure.status);
-        if (reason) await this.botDown(reason.text, reason.fatal);
+        // One webhook budget covers the offline notice and this part
+        const deadline = Date.now() + this.webhookTimeoutMs;
+        if (reason) await this.markDown(reason.text, reason.fatal, deadline);
+        await this.deliverViaWebhook(part, deadline);
+        return;
       }
     }
     await this.deliverViaWebhook(part);
@@ -151,14 +162,19 @@ export class DiscordNotifier {
 
   // Last-resort delivery: the webhook if there is one, else the console. Logs
   // carry only a status or error message, never the URL or token.
-  private async deliverViaWebhook(part: string): Promise<void> {
+  private async deliverViaWebhook(part: string, deadline?: number): Promise<void> {
     const webhookUrl = this.config?.webhookUrl;
     if (!webhookUrl) {
       console.error(`[discord] undelivered (no webhook): ${part}`);
       return;
     }
+    const remaining = deadline === undefined ? this.webhookTimeoutMs : deadline - Date.now();
+    if (remaining < 1) {
+      console.error('[discord] send failed: webhook time budget exhausted');
+      return;
+    }
     try {
-      const res = await postWebhook(webhookUrl, part, this.webhookTimeoutMs);
+      const res = await postWebhook(webhookUrl, part, remaining);
       if (!res.ok) console.error(`[discord] send rejected: HTTP ${res.status} — check the webhook URL`);
     } catch (err) {
       console.error(`[discord] send failed: ${(err as Error).message}`);
