@@ -1,8 +1,8 @@
-# steamidled
+# steamidler
 
 A command-line Steam game idler. It logs in to your Steam account and reports up to 32 games as being played, so they accumulate playtime and trading card drops without the games running. It can be used interactively or as a headless background service.
 
-This repository is a fork of [louisraetz/steamidled](https://github.com/louisraetz/steamidled) (v1.2.0). It replaces the upstream Telegram notifications with Discord notifications and removes the Docker setup.
+Based on [steamidled](https://github.com/louisraetz/steamidled) by louisraetz (MIT).
 
 <p align="center">
   <img src="assets/cli-1.png" width="49%" alt="Game selector" />
@@ -29,11 +29,11 @@ This repository is a fork of [louisraetz/steamidled](https://github.com/louisrae
 
 ## Installation
 
-This fork is not published to npm; `npm install -g @louisraetz/steamidled` installs the upstream version instead. Build it from source:
+This project is not published to npm. Build it from source:
 
 ```bash
-git clone https://github.com/Laakdal/steam-idler.git
-cd steam-idler
+git clone https://github.com/Laakdal/steamidler.git
+cd steamidler
 npx pnpm@10.34.6 install --frozen-lockfile --ignore-scripts
 npx pnpm@10.34.6 build
 ```
@@ -93,7 +93,7 @@ A network error or Steam rate limit at startup keeps the saved login; only an ex
 
 Each selected game alternates between an idle phase of 7–30 days and a cooldown of 100–200 hours, with lengths chosen at random per game. The exempt game, if any, never enters cooldown.
 
-While another device plays a game on the same account, Steam blocks idling for the whole session; steamidled pauses the clocks and resumes when the other session ends. Every 4 hours it briefly logs off and on again so Steam commits the accumulated playtime, and it periodically checks that server-side playtime is actually increasing.
+While another device plays a game on the same account, Steam blocks idling for the whole session; steamidler pauses the clocks and resumes when the other session ends. Every 4 hours it briefly logs off and on again so Steam commits the accumulated playtime, and it periodically checks that server-side playtime is actually increasing.
 
 After a disconnect it keeps retrying with exponential backoff. It stops after 30 failed reconnects, 10 rate-limited attempts, or an error that retrying cannot fix.
 
@@ -133,19 +133,19 @@ All state is stored in `~/.steam-idler/`:
 
 ## Running as a service
 
-To idle continuously on a Linux server, log in interactively once as the user that will run the service, then create `/etc/systemd/system/steamidled.service`:
+To idle continuously on a Linux server, log in interactively once as the user that will run the service, then create `/etc/systemd/system/steamidler.service`:
 
 ```ini
 [Unit]
-Description=steamidled
+Description=steamidler
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=YOUR_USERNAME
-WorkingDirectory=/path/to/steam-idler
-ExecStart=/usr/bin/node /path/to/steam-idler/dist/index.js --headless
+WorkingDirectory=/path/to/steamidler
+ExecStart=/usr/bin/node /path/to/steamidler/dist/index.js --headless
 Environment=TZ=Region/City
 Restart=on-failure
 RestartSec=10
@@ -160,8 +160,8 @@ Replace `YOUR_USERNAME`, the paths, and the time zone (the daily report is sent 
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now steamidled
-journalctl -u steamidled -f
+sudo systemctl enable --now steamidler
+journalctl -u steamidler -f
 ```
 
 ## Development
@@ -176,7 +176,7 @@ The project is TypeScript (ES modules, strict mode) with no test suite; a succes
 
 ## Disclaimer
 
-steamidled uses Steam's official client protocol, but idling may conflict with Valve's terms of service. Use it at your own risk.
+steamidler uses Steam's official client protocol, but idling may conflict with Valve's terms of service. Use it at your own risk.
 
 ## License
 

@@ -21,7 +21,7 @@ export interface Choice {
   value: string;
 }
 
-export const NOT_ALLOWED_REPLY = "You're not allowed to control this steamidled.";
+export const NOT_ALLOWED_REPLY = "You're not allowed to control this steamidler.";
 
 const MAX_CHOICES = 25;
 const MAX_CHOICE_NAME = 100;
@@ -85,7 +85,7 @@ export function runAdd(panel: ControlPanel, rawAppid: string): string {
   if (selection.some((g) => g.appid === appid)) return `Already idling ${game.name}.`;
   if (selection.length >= MAX_IDLE_GAMES) return `Already idling ${MAX_IDLE_GAMES} games — remove one first.`;
   panel.add(appid);
-  return `▶️ Now idling ${game.name} (until steamidled restarts).`;
+  return `▶️ Now idling ${game.name} (until steamidler restarts).`;
 }
 
 // Validates and applies a /remove request, returning the reply text.
@@ -99,9 +99,9 @@ export function runRemove(panel: ControlPanel, rawAppid: string): string {
     const inLibrary = appid !== null && panel.library().some((g) => g.appid === appid);
     return inLibrary ? `${panel.library().find((g) => g.appid === appid)!.name} isn't being idled.` : 'Unknown game.';
   }
-  if (selection.length <= 1) return `${game.name} is the only game left — steamidled needs at least one.`;
+  if (selection.length <= 1) return `${game.name} is the only game left — steamidler needs at least one.`;
   panel.remove(appid);
-  return `⏹️ Stopped idling ${game.name} (until steamidled restarts).`;
+  return `⏹️ Stopped idling ${game.name} (until steamidler restarts).`;
 }
 
 // Mirrors the daemon's "2h 05m" duration style for cooldown countdowns.
@@ -135,6 +135,6 @@ export function formatStatus(panel: ControlPanel, now: Date): string {
   if (exempt.length > 0) lines.push(`Exempt: ${exempt.map((g) => `${g.name} ∞`).join(', ')}`, '');
   const waiting = panel.waitingReason();
   if (waiting !== null) lines.push(`Steam: disconnected — ${waiting}`, '');
-  lines.push('Changes made here last until steamidled restarts; favorites are unchanged.');
+  lines.push('Changes made here last until steamidler restarts; favorites are unchanged.');
   return lines.join('\n');
 }

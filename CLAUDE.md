@@ -4,7 +4,7 @@
 
 ## At a glance
 
-- steamidled: TypeScript ESM CLI/daemon that idles up to 32 Steam games. Node >=18, pnpm lockfile, strict `tsc`.
+- steamidler: TypeScript ESM CLI/daemon that idles up to 32 Steam games. Node >=18, pnpm lockfile, strict `tsc`.
 - This tree is an **uncommitted local fork** of upstream v1.2.0 (`9f2b1ab`): Telegram replaced by Discord. Don't pull, reset, or commit unless asked.
 - Build: `npx pnpm@10.34.6 install --frozen-lockfile --ignore-scripts`, then `npx pnpm@10.34.6 build`.
 - No test suite, no linter. `tsc` is the only automated gate.

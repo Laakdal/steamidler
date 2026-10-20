@@ -1,8 +1,8 @@
-# Steam / steam-user Error Codes — What Can Kill steamidled
+# Steam / steam-user Error Codes — What Can Kill steamidler
 
 Catalogue of error conditions (`EResult` codes and non-EResult throws) that can
 stop or crash the application, how `steam-user@5.3.0` surfaces each, and what
-`steamidled` currently does in response.
+`steamidler` currently does in response.
 
 > Historical note: §2 and §3 describe the resume logic as it was when this
 > research was written. The hardening pass (§6) and the later audit changed it:
@@ -25,12 +25,12 @@ Three distinct channels — only some are catchable:
 ### `error` event (fatal)
 Emitted on a **fatal** disconnect, or when `autoRelogin` is off. The `Error`
 object carries an `.eresult` (numeric `EResult`). **If unhandled, the process
-crashes.** steamidled does handle it (`src/index.ts:670`), routing it to the
+crashes.** steamidler does handle it (`src/index.ts:670`), routing it to the
 resume flow.
 
 ### `disconnected` event (non-fatal)
 Emitted on a non-fatal disconnect. steam-user keeps the session and retries
-internally (`autoRelogin`, default `true`). steamidled also listens
+internally (`autoRelogin`, default `true`). steamidler also listens
 (`src/index.ts:662`).
 
 ### Fatal vs non-fatal split (from source)
@@ -60,7 +60,7 @@ Some failures are thrown, not emitted:
 
 ---
 
-## 2. How steamidled reacts (the resume state machine)
+## 2. How steamidler reacts (the resume state machine)
 
 `error` and `disconnected` both call `enterWaitingState()`
 (`src/index.ts:122`) → freeze elapsed time, then poll `attemptResume()` every
@@ -110,7 +110,7 @@ idling without a crash.
 ## 4. EResult reference (codes relevant to logon / idle / resume)
 
 `name(code)`. "Fatal?" = whether steam-user emits it as `error` (per §1).
-"App behavior" = what steamidled does today.
+"App behavior" = what steamidler does today.
 
 ### Transient / network — recoverable
 | Code | Name | steam-user | App behavior |

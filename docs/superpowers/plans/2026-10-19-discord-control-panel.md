@@ -20,7 +20,7 @@
 - Gateway intents: `GatewayIntentBits.Guilds` only. No privileged intents.
 - `send()` never rejects. Per message part: bot attempt ≤ 4000 ms, webhook attempt ≤ 4000 ms (8 s total).
 - Bot counts as down after **120 000 ms** of failed Gateway reconnects, immediately on close codes 4004/4010/4011/4012/4013/4014, on REST 401 (fatal), and on REST 403/404 when posting.
-- `/add` and `/remove` never write favorites. Reply copy says "until steamidled restarts".
+- `/add` and `/remove` never write favorites. Reply copy says "until steamidler restarts".
 - Autocomplete: at most 25 choices, names truncated to 100 characters, value = appid as a decimal string.
 - Discord REST base: `https://discord.com/api/v10`. Invite permissions `3072` (View Channel + Send Messages), scopes `bot applications.commands`.
 - Do not run the app against the real Steam account or contact Discord with real credentials. Live testing is the user's checklist in Task 9.
@@ -163,7 +163,7 @@ Run (Git Bash): `cd "/c/Mudrock's Headquarters/Project/Steam Idle" && npx pnpm@1
   export function finishSetup(bot: BotConfig, webhookUrl: string | null): Promise<void> // test post via bot, test post via webhook (if any), registerCommands; saves only if all three succeed; otherwise throws DiscordApiError and saves nothing
   export function runDiscordSetup(): Promise<void>  // prompt glue, exported for index.ts
   ```
-  `inviteUrl` returns exactly `https://discord.com/oauth2/authorize?client_id=${applicationId}&scope=bot%20applications.commands&permissions=3072`. Test message text: `✅ steamidled bot connected.` (bot) and `✅ steamidled backup webhook connected.` (webhook).
+  `inviteUrl` returns exactly `https://discord.com/oauth2/authorize?client_id=${applicationId}&scope=bot%20applications.commands&permissions=3072`. Test message text: `✅ steamidler bot connected.` (bot) and `✅ steamidler backup webhook connected.` (webhook).
 
 - [ ] **Step 1: Write the failing tests** (mocked `fetch` routing by URL + method):
   - `fetchBotIdentity returns app id, bot name and owner`; `…lists team members when team-owned`; `…rejects a non-bot token` (`bot` missing) with a message that does not contain the token; `…throws DiscordApiError(401)` on 401.
@@ -182,7 +182,7 @@ Run (Git Bash): `cd "/c/Mudrock's Headquarters/Project/Steam Idle" && npx pnpm@1
 **Files:**
 - Create: `src/discord/notifier.ts`
 - Delete: `src/notifications/discord.ts`
-- Modify: `src/index.ts` (imports; first-run prompt uses `runDiscordSetup` from `./discord/setup.js`, `saveDiscordDisabled` from `./discord/config.js`; `--help` line becomes `steamidled --setup-discord   (Re)configure the Discord bot and backup webhook`)
+- Modify: `src/index.ts` (imports; first-run prompt uses `runDiscordSetup` from `./discord/setup.js`, `saveDiscordDisabled` from `./discord/config.js`; `--help` line becomes `steamidler --setup-discord   (Re)configure the Discord bot and backup webhook`)
 - Test: `$T/notifier.test.mjs`
 
 **Interfaces:**
@@ -205,7 +205,7 @@ Run (Git Bash): `cd "/c/Mudrock's Headquarters/Project/Steam Idle" && npx pnpm@1
   Exact copy (sent through the normal escape path):
   - offline (via webhook, or console if none): `⚠️ Discord bot offline (${reason}). Notifications are coming through the backup webhook. /add, /remove and /status won't work until the bot is back.`
   - online (via bot; if that post fails, stay down silently): `✅ Discord bot back online. Commands work again.`
-  - reasons: 401/4004 `token rejected — reset it in the Developer Portal, run --setup-discord, then restart steamidled`; 403 `no permission to post in the notification channel — fix the bot's channel permissions, then restart steamidled`; 404 `notification channel not found — run --setup-discord, then restart steamidled`; Gateway grace `can't reach Discord for 2 min`; 4013/4014 `gateway intents rejected by Discord`; 4010–4012 `gateway connection rejected (code ${code})`.
+  - reasons: 401/4004 `token rejected — reset it in the Developer Portal, run --setup-discord, then restart steamidler`; 403 `no permission to post in the notification channel — fix the bot's channel permissions, then restart steamidler`; 404 `notification channel not found — run --setup-discord, then restart steamidler`; Gateway grace `can't reach Discord for 2 min`; 4013/4014 `gateway intents rejected by Discord`; 4010–4012 `gateway connection rejected (code ${code})`.
 
 - [ ] **Step 1: Write the failing tests** (config file written per test; timeouts `{ botTimeoutMs: 50, webhookTimeoutMs: 50 }`):
   - `bot healthy: posts once to the channel, webhook untouched`.
@@ -249,17 +249,17 @@ Run (Git Bash): `cd "/c/Mudrock's Headquarters/Project/Steam Idle" && npx pnpm@1
   export function runAdd(panel: ControlPanel, rawAppid: string): string
   export function runRemove(panel: ControlPanel, rawAppid: string): string
   export function formatStatus(panel: ControlPanel, now: Date): string
-  export const NOT_ALLOWED_REPLY = "You're not allowed to control this steamidled."
+  export const NOT_ALLOWED_REPLY = "You're not allowed to control this steamidler."
   ```
   Suggestions: case-insensitive; names starting with the query first, then names containing it, each group alphabetical; empty query → alphabetical; `suggestAdd` excludes selected appids; max 25; names over 100 chars cut to 99 + `…`. Appid parsing: only `/^\d+$/`, then must exist in `library()` (add) or `selection()` (remove), else `Unknown game.`
-  Reply copy: add `▶️ Now idling ${name} (until steamidled restarts).`; `Already idling ${name}.`; `Already idling 32 games — remove one first.`; remove `⏹️ Stopped idling ${name} (until steamidled restarts).`; `${name} isn't being idled.`; `${name} is the only game left — steamidled needs at least one.`; busy → `busyReason()` text. Check order: busy, parse/unknown, already/not selected, cap/last game.
-  `formatStatus`: sections `Idling (n)`, `Cooldown (n)` with time left (`2h 05m` style), `Paused — playing elsewhere (n)`, `Exempt: name ∞` if any, `Steam: disconnected — ${reason}` when waiting, and last line `Changes made here last until steamidled restarts; favorites are unchanged.`
+  Reply copy: add `▶️ Now idling ${name} (until steamidler restarts).`; `Already idling ${name}.`; `Already idling 32 games — remove one first.`; remove `⏹️ Stopped idling ${name} (until steamidler restarts).`; `${name} isn't being idled.`; `${name} is the only game left — steamidler needs at least one.`; busy → `busyReason()` text. Check order: busy, parse/unknown, already/not selected, cap/last game.
+  `formatStatus`: sections `Idling (n)`, `Cooldown (n)` with time left (`2h 05m` style), `Paused — playing elsewhere (n)`, `Exempt: name ∞` if any, `Steam: disconnected — ${reason}` when waiting, and last line `Changes made here last until steamidler restarts; favorites are unchanged.`
 
 - [ ] **Step 1: Write the failing tests** against a fake `ControlPanel` that records `add`/`remove` calls:
   - `isAuthorized`: owner in configured guild → true; other user → false; owner in another guild → false; owner in DM (`guildId: null`) → false.
   - `suggestAdd excludes selected games and caps at 25` (library of 40); `…ranks prefix matches first`; `…truncates names over 100 chars to 100` (Review Focus 1, 300-char name); `suggestRemove lists only the selection`.
   - `runAdd rejects non-library values` (Review Focus 2): `"abc"`, `"-1"`, `"1e3"`, `" 10 "`, `"999"` (not in library) → `Unknown game.`, no `add` call.
-  - `runAdd refuses the 33rd game`; `runAdd refuses an already selected game`; `runAdd returns busyReason and does not call add when busy`; `runAdd success calls add(appid) and replies with "until steamidled restarts"`.
+  - `runAdd refuses the 33rd game`; `runAdd refuses an already selected game`; `runAdd returns busyReason and does not call add when busy`; `runAdd success calls add(appid) and replies with "until steamidler restarts"`.
   - `runRemove refuses the last game`; `runRemove success calls remove`.
   - `formatStatus lists sections, time left, waiting reason, and the restart note`.
 - [ ] **Step 2: Run** → FAIL.
@@ -295,7 +295,7 @@ Run (Git Bash): `cd "/c/Mudrock's Headquarters/Project/Steam Idle" && npx pnpm@1
   ```
   Behavior: `registerCommands(bot)` first (401 → `notifier.botDown(token reason, true)` and stop; other failures logged, continue); `new Client({ intents: [GatewayIntentBits.Guilds] })`; `client.login(token)` rejection → token reason if the error code is `TokenInvalid`, else `health.disconnected(null)`. Events: `ShardDisconnect` → `health.disconnected(event.code)`; `ShardReconnecting` → `health.disconnected(null)`; `ShardReady` / `ShardResume` → `health.ready()`; `Invalidated` → `notifier.botDown('session invalidated by Discord', true)`; `Error` → `console.error('[discord] ' + err.message)`. `InteractionCreate`: unauthorized autocomplete → `respond([])`; unauthorized command → ephemeral `NOT_ALLOWED_REPLY`; autocomplete `add`/`remove` → `respond(suggest…(panel, focused value))`; commands → `reply({ content: escapeMarkdown(text), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } })` with text from `runAdd` / `runRemove` / `formatStatus`. Every handler is wrapped so nothing throws. `destroy()` → `health.stop()` then `client.destroy()`.
 - Produces (`index.ts`): `const controlPanel: ControlPanel` and `let botHandle: BotHandle | null`.
-  - `busyReason()` in order: `isShuttingDown` → `steamidled is shutting down.`; `!startTime` → `Idling hasn't started yet.`; `isInEditMode` → `The game selector is open on the PC — try again after closing it.`; `isWaitingForResume` → `Disconnected from Steam (${waitingReason}) — try again after it reconnects.`
+  - `busyReason()` in order: `isShuttingDown` → `steamidler is shutting down.`; `!startTime` → `Idling hasn't started yet.`; `isInEditMode` → `The game selector is open on the PC — try again after closing it.`; `isWaitingForResume` → `Disconnected from Steam (${waitingReason}) — try again after it reconnects.`
   - `add(appid)` / `remove(appid)`: `bankElapsed(idlingGames)` unless `playingBlocked`; new selection = current selection plus or minus the game (remove clears `exemptAppId` if it was the exempt game); `computeSelection(...)`; assign arrays and `exemptAppId`; `client.setGamesPlaying(idlingGames.map((g) => g.appid))` unless `isWaitingForResume`; `renderStatus()` unless `isInEditMode`. Never touches favorites.
   - `selection()` maps the three arrays to `SelectedGameView` (`cooldown` with `cooldownEndsAt = pauseUntil`; `exempt = nextPauseAtMs === null`).
   - Start: at the end of `startIdling`, `if (discord.botConfig()) botHandle = startBot(discord.botConfig()!, controlPanel, discord)`.
@@ -316,8 +316,8 @@ Run (Git Bash): `cd "/c/Mudrock's Headquarters/Project/Steam Idle" && npx pnpm@1
 **Files:**
 - Modify: `README.md`, `AGENTS.md`, `SECURITY-AUDIT.md`
 
-- [ ] **Step 1: `README.md`.** Replace the "📲 Discord notifications" section with "📲 Discord bot (optional)": creating the application and bot, the invite (View Channel + Send Messages), `--setup-discord`, the three commands, session-only behavior ("lasts until steamidled restarts; favorites unchanged"), owner-only, ephemeral replies, the backup webhook and the offline/online notices, keeping the token and webhook secret (never paste them in chats or screenshots; Reset Token / delete webhook to revoke; put the webhook in a private channel). Update the feature bullet, usage line, and config tree comment (`discord.json  # Discord bot token, IDs, optional backup webhook`).
-- [ ] **Step 2: `README.md` systemd section → "Running 24/7 on a Linux VPS"**: Node 22; clone and build with the pinned pnpm commands; a dedicated non-root user (`sudo useradd --system --create-home steamidled`); first interactive run as that user over SSH (QR in the terminal, star favorites, `--setup-discord`); unit with `User=steamidled`, `WorkingDirectory=/opt/steamidled`, `ExecStart=/usr/bin/node /opt/steamidled/dist/index.js --headless`, `Environment=TZ=<Region/City>`, `Restart=on-failure`, `RestartSec=10`, `RestartPreventExitStatus=2`, `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ReadWritePaths=/home/steamidled/.steam-idler`; firewall note (no inbound ports needed); keep the "Useful commands" block. State that the unit was not tested by the author of this change.
+- [ ] **Step 1: `README.md`.** Replace the "📲 Discord notifications" section with "📲 Discord bot (optional)": creating the application and bot, the invite (View Channel + Send Messages), `--setup-discord`, the three commands, session-only behavior ("lasts until steamidler restarts; favorites unchanged"), owner-only, ephemeral replies, the backup webhook and the offline/online notices, keeping the token and webhook secret (never paste them in chats or screenshots; Reset Token / delete webhook to revoke; put the webhook in a private channel). Update the feature bullet, usage line, and config tree comment (`discord.json  # Discord bot token, IDs, optional backup webhook`).
+- [ ] **Step 2: `README.md` systemd section → "Running 24/7 on a Linux VPS"**: Node 22; clone and build with the pinned pnpm commands; a dedicated non-root user (`sudo useradd --system --create-home steamidler`); first interactive run as that user over SSH (QR in the terminal, star favorites, `--setup-discord`); unit with `User=steamidler`, `WorkingDirectory=/opt/steamidler`, `ExecStart=/usr/bin/node /opt/steamidler/dist/index.js --headless`, `Environment=TZ=<Region/City>`, `Restart=on-failure`, `RestartSec=10`, `RestartPreventExitStatus=2`, `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ReadWritePaths=/home/steamidler/.steam-idler`; firewall note (no inbound ports needed); keep the "Useful commands" block. State that the unit was not tested by the author of this change.
 - [ ] **Step 3: `AGENTS.md`.** Layout: replace `notifications/discord.ts` with the `src/discord/` modules and `src/selection.ts`; add invariants: Discord changes go through `controlPanel` guards and `computeSelection`; `/add` and `/remove` never write favorites; bot is started only from `startIdling`; `send()` budget 4 s + 4 s.
 - [ ] **Step 4: `SECURITY-AUDIT.md` §16 "Discord bot control panel"**: new secret (bot token) and its handling; owner/guild lock; intents; new destinations (Gateway, `discord.com/api/v10`); fallback; what was tested offline and what was not; pointer to §15 for the dependency.
 - [ ] **Step 5: Verify** `grep -rn "Telegram\|telegram" README.md AGENTS.md src` is empty, all touched files are CRLF (`file <path>` shows CRLF), build passes.
@@ -336,5 +336,5 @@ Run (Git Bash): `cd "/c/Mudrock's Headquarters/Project/Steam Idle" && npx pnpm@1
   5. Another account in the server tries `/status` → "not allowed" (or doesn't see the commands).
   6. Reset the bot token in the Developer Portal → within seconds to minutes the webhook posts the offline notice; restart after `--setup-discord` → bot works again.
   7. Play a game on another device, `/add` during the block, stop playing → the added game idles.
-  8. `sudo systemctl stop steamidled` returns within a few seconds and "🛑 Idling stopped" arrives.
+  8. `sudo systemctl stop steamidler` returns within a few seconds and "🛑 Idling stopped" arrives.
 - [ ] **Step 5:** Report to the user: what changed, test results, what was not run, and the checklist.

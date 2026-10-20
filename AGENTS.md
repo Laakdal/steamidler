@@ -4,7 +4,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## What this is
 
-`steamidled` is a Node.js CLI and daemon that idles up to 32 Steam games at once to accumulate playtime. It runs interactively (keyboard UI with a game selector) or headless (`--headless`, auto-starts favorites; run as a systemd service). The intended deployment is headless on a Linux VPS; development happens on Windows.
+`steamidler` is a Node.js CLI and daemon that idles up to 32 Steam games at once to accumulate playtime. It runs interactively (keyboard UI with a game selector) or headless (`--headless`, auto-starts favorites; run as a systemd service). The intended deployment is headless on a Linux VPS; development happens on Windows.
 
 This tree is a **local fork** of upstream `louisraetz/steamidled` v1.2.0 (commit `9f2b1ab`), with uncommitted changes:
 

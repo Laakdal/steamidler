@@ -1,12 +1,12 @@
 {
-  "name": "@louisraetz/steamidled",
-  "version": "1.2.0",
+  "name": "steamidler",
+  "version": "0.1.0",
   "description": "Steam game idler CLI and daemon - idle games and accumulate playtime",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "steamidled": "dist/index.js"
+    "steamidler": "dist/index.js"
   },
   "files": [
     "dist",
@@ -29,15 +29,15 @@
     "cli",
     "trading-cards"
   ],
-  "author": "louisraetz",
+  "author": "Laakdal",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/louisraetz/steamidled.git"
+    "url": "git+https://github.com/Laakdal/steamidler.git"
   },
-  "homepage": "https://github.com/louisraetz/steamidled#readme",
+  "homepage": "https://github.com/Laakdal/steamidler#readme",
   "bugs": {
-    "url": "https://github.com/louisraetz/steamidled/issues"
+    "url": "https://github.com/Laakdal/steamidler/issues"
   },
   "engines": {
     "node": ">=18.0.0"

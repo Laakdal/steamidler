@@ -1,7 +1,7 @@
 # Steam Playtime & Idling — Research Notes
 
 Research into how Steam tracks game playtime, how it commits/resets, how the
-`node-steam-user` JS SDK exposes it, and what this means for `steamidled`.
+`node-steam-user` JS SDK exposes it, and what this means for `steamidler`.
 
 > Caveat: Steam does not publicly document the internal playtime-commit
 > protocol. Items marked **(lore)** come from community reports/forums, not
@@ -69,7 +69,7 @@ Mismatch between the two is the "discrepancy" bug users report.
 
 ## 7. Steam JS SDK — `node-steam-user` (DoctorMcKay)
 
-The library `steamidled` is built on.
+The library `steamidler` is built on.
 
 ### `gamesPlayed(apps[, force])`
 - Sends `CMsgClientGamesPlayed` → tells Steam "playing these appids".
@@ -139,7 +139,7 @@ session.
 
 ---
 
-## 9. Mitigations for steamidled
+## 9. Mitigations for steamidler
 
 1. **Periodic forced flush (cheap insurance).** Every N hours (e.g. 2–4h),
    cycle the idle to force a commit:

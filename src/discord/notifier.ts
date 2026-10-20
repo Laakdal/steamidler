@@ -9,10 +9,10 @@ export interface NotifierOptions {
 
 // Why the bot is offline, worded for the owner; shared with the Gateway code
 export const BOT_DOWN_REASONS = {
-  tokenRejected: 'token rejected — reset it in the Developer Portal, run --setup-discord, then restart steamidled',
+  tokenRejected: 'token rejected — reset it in the Developer Portal, run --setup-discord, then restart steamidler',
   noPermission:
-    "no permission to post in the notification channel — fix the bot's channel permissions, then restart steamidled",
-  channelNotFound: 'notification channel not found — run --setup-discord, then restart steamidled',
+    "no permission to post in the notification channel — fix the bot's channel permissions, then restart steamidler",
+  channelNotFound: 'notification channel not found — run --setup-discord, then restart steamidler',
   gatewayUnreachable: "can't reach Discord for 2 min",
   intentsRejected: 'gateway intents rejected by Discord',
   gatewayRejected: (code: number): string => `gateway connection rejected (code ${code})`,

@@ -679,15 +679,15 @@ function announceWebhookOnly(): void {
 
 // Prints CLI usage
 function showHelp(): void {
-  console.log(`steamidled — Steam game idler CLI and daemon
+  console.log(`steamidler — Steam game idler CLI and daemon
 
 Usage:
-  steamidled                   Interactive mode (login, pick games, idle)
-  steamidled --headless        Headless mode: auto-login and idle your favorites
-  steamidled --setup-discord   (Re)configure the Discord bot and backup webhook
-  steamidled --logout          Forget the saved Steam login
-  steamidled --version, -v     Print version
-  steamidled --help, -h        Show this help
+  steamidler                   Interactive mode (login, pick games, idle)
+  steamidler --headless        Headless mode: auto-login and idle your favorites
+  steamidler --setup-discord   (Re)configure the Discord bot and backup webhook
+  steamidler --logout          Forget the saved Steam login
+  steamidler --version, -v     Print version
+  steamidler --help, -h        Show this help
 
 Config lives in ~/.steam-idler/ (credentials, favorites, discord).`);
 }
@@ -957,7 +957,7 @@ async function handleLogin(): Promise<LoginResult> {
 }
 
 // Sets up raw mode keyboard input handling for edit and quit commands. Headless
-// never touches stdin: `steamidled --headless &` from a shell would otherwise
+// never touches stdin: `steamidler --headless &` from a shell would otherwise
 // be stopped by SIGTTOU when setRawMode runs in the background.
 function setupKeyboardInput(): void {
   if (isHeadless) return;
@@ -1109,7 +1109,7 @@ function applyRemoteSelection(newSelection: GameSelection[], newExemptAppId: num
 const controlPanel: ControlPanel = {
   // Reports why a remote change is unsafe right now, or null when it is fine.
   busyReason(): string | null {
-    if (isShuttingDown) return 'steamidled is shutting down.';
+    if (isShuttingDown) return 'steamidler is shutting down.';
     if (!startTime) return "Idling hasn't started yet.";
     if (isInEditMode) return 'The game selector is open on the PC — try again after closing it.';
     if (isWaitingForResume) {
@@ -1408,7 +1408,7 @@ function handleCrash(err: unknown): void {
     : discord.send(
         startTime
           ? `🛑 Idling stopped — crashed (${message}).`
-          : `🛑 steamidled crashed before idling started (${message}).`
+          : `🛑 steamidler crashed before idling started (${message}).`
       );
 
   const grace = new Promise((resolve) => setTimeout(resolve, CRASH_FLUSH_GRACE_MS));

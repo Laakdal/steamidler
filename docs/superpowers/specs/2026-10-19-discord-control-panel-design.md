@@ -4,13 +4,13 @@ Status: **draft, awaiting the user's approval.** Nothing here is built yet.
 
 ## Intent
 
-The user runs steamidled unattended (often headless) and wants to change which games are idling without being at the PC: from Discord, through a bot, add a game from their library or remove one. Today Discord is one-way: a webhook posts notifications and cannot receive anything.
+The user runs steamidler unattended (often headless) and wants to change which games are idling without being at the PC: from Discord, through a bot, add a game from their library or remove one. Today Discord is one-way: a webhook posts notifications and cannot receive anything.
 
 Success: from the Discord app on a phone, the user types a command, picks a game, and within seconds the idler on the PC is idling the new set, with a confirmation reply. Notifications keep arriving even when the bot itself breaks.
 
 ## Target environment
 
-The user plans to run steamidled **headless on a Linux VPS** (stated 2026-10-19). Development and builds happen on their Windows PC. Consequences for this design:
+The user plans to run steamidler **headless on a Linux VPS** (stated 2026-10-19). Development and builds happen on their Windows PC. Consequences for this design:
 
 - `0o600` on `discord.json` and `credentials.json` (and `0o700` on `~/.steam-idler`) is enforced on Linux, so file permissions are a real protection there.
 - The bot needs **no inbound ports**: the Gateway and webhook are outbound connections. The VPS firewall can stay closed except SSH.
@@ -28,7 +28,7 @@ The user plans to run steamidled **headless on a Linux VPS** (stated 2026-10-19)
 
 ## Non-goals
 
-- Starting steamidled remotely. When the process is not running, the bot is offline; that is accepted.
+- Starting steamidler remotely. When the process is not running, the bot is offline; that is accepted.
 - Changing favorites (stars) from Discord. `/add` and `/remove` only change what is idling now.
 - Remote quit/stop, exempt-game changes, login or Steam Guard over Discord.
 - Multiple Discord users or multiple Steam accounts.
@@ -47,7 +47,7 @@ The user plans to run steamidled **headless on a Linux VPS** (stated 2026-10-19)
 
 - Control happens through a **new, dedicated Discord bot** (not the user's old bot).
 - Library: **`discord.js`**, reviewed and recorded in `SECURITY-AUDIT.md` before install.
-- **`/add` and `/remove` change the current idling session only**, never favorites. Consequence, stated to the user: Discord changes last until steamidled restarts; a headless restart (reboot, crash, service restart) idles the favorites again.
+- **`/add` and `/remove` change the current idling session only**, never favorites. Consequence, stated to the user: Discord changes last until steamidler restarts; a headless restart (reboot, crash, service restart) idles the favorites again.
 - **Game picking from the library** via autocomplete.
 - **Webhook fallback:** when the bot dies, notifications switch to a webhook automatically, with a notice.
 - Docs (`AGENTS.md`, `CLAUDE.md`, this spec) come before code.
@@ -62,7 +62,7 @@ The user plans to run steamidled **headless on a Linux VPS** (stated 2026-10-19)
 
 ### Discord side
 
-- **Connection:** `discord.js` keeps one Gateway (WebSocket) connection open while steamidled runs. Commands arrive as interactions and are answered through the library (which uses HTTP callbacks under the hood).
+- **Connection:** `discord.js` keeps one Gateway (WebSocket) connection open while steamidler runs. Commands arrive as interactions and are answered through the library (which uses HTTP callbacks under the hood).
 - **Intents:** only `Guilds` (needed by `discord.js` to cache the guild and channel). Discord's gateway docs list which events need intents and say unlisted events are always sent; `INTERACTION_CREATE` is not listed. No privileged intents (Message Content, Members, Presences). The builder confirms this works during development.
 - **Commands** are registered as **guild commands** in the chosen server (they appear immediately). Registration is an idempotent bulk overwrite on every startup, so renamed or removed commands do not linger. Commands set `default_member_permissions: "0"`, so Discord hides them from everyone except server admins, as a first layer.
 - **Owner lock (the real control):** every interaction is checked against the owner's Discord user ID before anything else; any other user gets a short ephemeral "not allowed" reply and nothing changes. Interactions from any guild other than the configured one, or from DMs, are refused the same way. The owner ID comes from the application's owner at setup (`GET /oauth2/applications/@me`; for a team-owned application, setup asks which member).
@@ -77,7 +77,7 @@ The user plans to run steamidled **headless on a Linux VPS** (stated 2026-10-19)
 | `/remove game:<name>` | the current selection (idling, cooldown, paused) | Removes it from the session | it is the last selected game; any guard below |
 | `/status` | — | Idling games, cooldowns with time left, paused games, exempt game, the waiting reason if disconnected, and a note that Discord changes are not saved to favorites | never |
 
-The autocomplete value is the appid (as a string); the command handler re-validates it against `allGames` / the selection, since a client can send any value. The `/add` and `/remove` replies say "until steamidled restarts" so the session-only behavior is never a surprise.
+The autocomplete value is the appid (as a string); the command handler re-validates it against `allGames` / the selection, since a client can send any value. The `/add` and `/remove` replies say "until steamidler restarts" so the session-only behavior is never a surprise.
 
 ### Steamidled side
 
@@ -85,7 +85,7 @@ The autocomplete value is the appid (as a string); the command handler re-valida
 
 **Guards for Discord changes** (`/add`, `/remove`), checked in this order, each with a clear ephemeral reply:
 
-- `isShuttingDown` → "steamidled is shutting down"
+- `isShuttingDown` → "steamidler is shutting down"
 - `startTime === null` → "idling hasn't started yet" (headless before login, interactive before the first selection)
 - `isInEditMode` → "the game selector is open on the PC"; the selector would overwrite the change when it closes
 - `isWaitingForResume` → "disconnected from Steam (reason), try again after it reconnects", matching `E`'s existing refusal
@@ -157,13 +157,13 @@ The first-run prompt in interactive mode stays as it is today ("Configure Discor
 ## Security notes
 
 - The bot token is a stronger secret than the webhook URL: whoever holds it controls the bot account and can read and post wherever the bot has access. Mitigations: minimal invite permissions, one server, no privileged intents, owner lock in code, never logged, `0o600` file. Revocation: "Reset Token" in the Developer Portal.
-- Even with the token, an attacker cannot change the idle set without being the owner, because the owner check is in steamidled, not in Discord.
+- Even with the token, an attacker cannot change the idle set without being the owner, because the owner check is in steamidler, not in Discord.
 - The backup webhook URL is a second secret with the same handling as today (validated on every load, never logged). Revocation: delete the webhook.
 - New outbound destinations: Discord's Gateway (`gateway.discord.gg`) and REST API (`discord.com/api`). `SECURITY-AUDIT.md` gets a new section for the bot, the fallback, and the dependency review.
 
 ## Builder's calls (settled during review)
 
-- Two processes with the same token (e.g. running `steamidled --setup-discord` or an interactive session over SSH while the systemd service runs) would both receive every command. Only a process that has started idling answers commands; others ignore interactions. Documented in the README.
+- Two processes with the same token (e.g. running `steamidler --setup-discord` or an interactive session over SSH while the systemd service runs) would both receive every command. Only a process that has started idling answers commands; others ignore interactions. Documented in the README.
 - A changed `discord.json` takes effect on the next start; the running process does not reload it.
 
 ## Testing

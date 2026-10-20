@@ -90,11 +90,11 @@ async function step(what: string, run: () => Promise<Response>): Promise<void> {
 // Proves every piece works before anything is stored: a half-working setup is never saved
 export async function finishSetup(bot: BotConfig, webhookUrl: string | null): Promise<void> {
   await step('the bot test message', () =>
-    postChannelMessage(bot.token, bot.channelId, '✅ steamidled bot connected.', TEST_TIMEOUT_MS)
+    postChannelMessage(bot.token, bot.channelId, '✅ steamidler bot connected.', TEST_TIMEOUT_MS)
   );
   if (webhookUrl) {
     await step('the webhook test message', () =>
-      postWebhook(webhookUrl, '✅ steamidled backup webhook connected.', TEST_TIMEOUT_MS)
+      postWebhook(webhookUrl, '✅ steamidler backup webhook connected.', TEST_TIMEOUT_MS)
     );
   }
   await step('the slash command registration', () => registerCommands(bot));
