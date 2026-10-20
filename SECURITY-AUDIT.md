@@ -8,7 +8,7 @@
 | **Target platform** | Windows 11 |
 | **Method** | Static analysis only — the application was never executed and no dependencies were installed |
 
-> **Local modification (2026-10-18):** Telegram notifications were removed and replaced with Discord webhooks after this audit. Sections below describe upstream v1.2.0 as audited; see **§13 Addendum** for what changed, the new network destination, and the effect on findings. Docker support was removed on 2026-10-19 (**§14**). This local build is **no longer identical** to the published npm package.
+> **Local modification (2026-10-18):** Telegram notifications were removed and replaced with Discord webhooks after this audit. Sections below describe upstream v1.2.0 as audited; see **§13 Addendum** for what changed, the new network destination, and the effect on findings. Docker support was removed on 2026-10-19 (**§14**). `discord.js` 14.27.0 and 21 transitive packages were added on 2026-10-21 after review (**§15**). This local build is **no longer identical** to the published npm package.
 
 ---
 
@@ -280,3 +280,62 @@ The user plans to run steamidled headless on a Linux VPS under systemd, and aske
 | `README.md` | Docker section and the Docker volume note removed |
 
 No source code, dependency, or lockfile changed. Effect on findings: the informational "Docker base image not digest-pinned; `pnpm@10` floating" item no longer applies to this tree. On Linux, the `0o600` file mode on `credentials.json` and `discord.json` is enforced, which narrows M1 (plaintext refresh token) to root and the account running the service, unlike Windows where the mode is a no-op.
+
+## 15. Addendum — discord.js dependency review (2026-10-21)
+
+The Discord bot control panel (spec `docs/superpowers/specs/2026-10-19-discord-control-panel-design.md`) needs a Gateway connection, so `discord.js` was added as the project's first new runtime dependency since the audit. It is pinned exactly (`"discord.js": "14.27.0"`, no caret).
+
+### How the tree was resolved
+
+`pnpm@10.34.6 add discord.js@14.27.0 --save-exact --lockfile-only --ignore-scripts` resolved the tree into `pnpm-lock.yaml` without installing. The first resolution picked two releases younger than the 14-day minimum (`discord-api-types@0.38.57`, published 2026-10-19, and `undici@6.29.1`, published 2026-10-15). The tree was re-resolved with `--config.minimum-release-age=20160` (14 days, this command only), which selected `discord-api-types@0.38.56` and `undici@6.29.0`. npm lists no advisories for either `undici` version, so the skipped release was not a security fix.
+
+`pnpm-lock.yaml` changed only by additions: 22 new packages, 0 existing entries changed, 0 removed.
+
+### Packages added
+
+| Package | Published | Publisher | Maintainers |
+|---|---|---|---|
+| `discord.js@14.27.0` | 2026-07-15 | crawl | hydrabolt, crawl, spaceeec |
+| `@discordjs/builders@1.14.1` | 2026-03-31 | crawl | crawl, hydrabolt |
+| `@discordjs/collection@1.5.3` | 2023-08-17 | crawl | crawl, hydrabolt |
+| `@discordjs/collection@2.1.1` | 2024-09-02 | crawl | crawl, hydrabolt |
+| `@discordjs/formatters@0.6.2` | 2025-11-18 | crawl | crawl, hydrabolt |
+| `@discordjs/rest@2.6.3` | 2026-07-19 | crawl | crawl, hydrabolt |
+| `@discordjs/util@1.2.0` | 2025-11-18 | crawl | crawl, hydrabolt |
+| `@discordjs/ws@1.2.3` | 2025-06-16 | crawl | crawl, hydrabolt |
+| `discord-api-types@0.38.56` | 2026-09-28 | GitHub Actions | crawl, spaceeec, vladfrangu |
+| `@sapphire/async-queue@1.5.5` | 2024-11-09 | vladfrangu | favna, vladfrangu, kyranet |
+| `@sapphire/shapeshift@4.0.0` | 2024-05-20 | favna | favna, vladfrangu, kyranet |
+| `@sapphire/snowflake@3.5.5` | 2024-11-09 | vladfrangu | favna, vladfrangu, kyranet |
+| `@vladfrangu/async_event_emitter@2.4.7` | 2025-10-04 | vladfrangu | vladfrangu |
+| `undici@6.29.0` | 2026-09-25 | GitHub Actions | matteo.collina, ronag, ethan_arrowood |
+| `ws@8.22.0` | 2026-09-26 | lpinca | lpinca |
+| `@types/ws@8.18.2` | 2026-09-29 | types | types |
+| `magic-bytes.js@1.13.1` | 2026-07-24 | larskoelpin | larskoelpin |
+| `ts-mixer@6.0.4` | 2024-02-20 | tannerntannern | tannerntannern |
+| `tslib@2.8.1` | 2024-10-31 | typescript-bot | TypeScript team |
+| `lodash@4.18.1` | 2026-04-01 | jdalton | mathias, jdalton, bnjmnt4n |
+| `lodash.snakecase@4.1.1` | 2016-08-13 | jdalton | jdalton, mathias, phated |
+| `fast-deep-equal@3.1.3` | 2020-06-08 | esp | esp |
+
+For every package, `dist.integrity` from `registry.npmjs.org` equals the lockfile's `sha512` entry, and every package is at least 14 days old. None has a `preinstall`, `install`, or `postinstall` script, and none builds native code. `undici` and `magic-bytes.js` declare a `prepare` script, which does not run for registry installs and is blocked by `--ignore-scripts` regardless. `@sapphire/shapeshift@4.0.0` was published by a different Sapphire maintainer (favna) than its previous version (vladfrangu). Both are long-standing maintainers of the project, and the release is from 2024, so this is not treated as a takeover.
+
+### Advisories
+
+`pnpm audit --prod` reports 30 advisories, the same count with or without `discord.js`; none is on a path through the `discord.js` tree. All 30 are in the four package versions already classified as not reachable in §5 L2: `protobufjs@6.11.6` (1 critical, 5 high, 5 moderate), `protobufjs@7.5.6` (1 high, 3 moderate), `adm-zip@0.5.17` (5 high, 3 moderate), and `ip-address@10.2.0` (1 high, 6 moderate). `protobufjs@6.11.6` has one more high-severity advisory than when §5 was written. It is reached the same way (`steam-appticket`, never called), so the §5 verdict stands.
+
+### Effect on the project
+
+- **Node floor:** `undici@6.29.0` requires Node `>=18.17`, so `package.json` `engines.node` is now `>=18.17.0`. The VPS deployment uses Node 22.
+- **New outbound destinations** (Discord Gateway, `discord.com/api/v10`) and the bot token as a new secret are documented with the bot itself, not here. At this point the library is installed but not yet imported by `src/`.
+
+### Validation
+
+| Check | Outcome |
+|---|---|
+| `pnpm@10.34.6 install --frozen-lockfile --ignore-scripts` | Installed the 22 reviewed packages; lockfile left unchanged; no lifecycle scripts run |
+| Installed versions | `discord.js@14.27.0`, `undici@6.29.0`, `discord-api-types@0.38.56`, `ws@8.22.0`, matching the review |
+| Smoke check: `import('discord.js')` | `Client` is a function, `GatewayIntentBits.Guilds === 1`, `version === '14.27.0'` |
+| `pnpm build` (`tsc`) | Passed, 0 errors |
+
+**Data sent externally during this review:** package names and versions to `registry.npmjs.org`. No source code, credentials, or personal data.
