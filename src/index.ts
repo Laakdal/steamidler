@@ -29,6 +29,7 @@ import { DiscordNotifier } from './discord/notifier.js';
 import { runDiscordSetup } from './discord/setup.js';
 import { saveDiscordDisabled } from './discord/config.js';
 import { startBot, type BotHandle } from './discord/bot.js';
+import { redactSecrets } from './discord/format.js';
 import { formatDailyReport } from './notifications/dailyReport.js';
 import { MAX_IDLE_GAMES, IS_HEADLESS } from './constants.js';
 import { createSpinner } from './ui/spinner.js';
@@ -1404,7 +1405,7 @@ function handleCrash(err: unknown): void {
   // Stack text only: logging the whole object would print library-attached
   // fields such as a Discord request URL, which can embed an interaction token.
   const detail = err instanceof Error ? err.stack ?? err.message : String(err);
-  console.error('\nFatal error:', detail.replace(/https?:\/\/\S+/g, '<url>'));
+  console.error('\nFatal error:', redactSecrets(detail));
 
   if (resumeTimer) clearTimeout(resumeTimer);
   if (resumeNotifyTimer) clearTimeout(resumeNotifyTimer);

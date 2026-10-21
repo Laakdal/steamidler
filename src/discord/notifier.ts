@@ -1,5 +1,5 @@
 import { loadDiscordConfig, type BotConfig, type DiscordConfig } from './config.js';
-import { escapeMarkdown, splitMessage } from './format.js';
+import { escapeMarkdown, redactSecrets, splitMessage } from './format.js';
 import { postChannelMessage, postWebhook } from './rest.js';
 
 export interface NotifierOptions {
@@ -76,7 +76,7 @@ export class DiscordNotifier {
         await this.deliver(part);
       }
     } catch (err) {
-      console.error(`[discord] send failed: ${(err as Error).message}`);
+      console.error(`[discord] send failed: ${this.errorText(err)}`);
     }
   }
 
@@ -102,7 +102,7 @@ export class DiscordNotifier {
         await this.deliverViaWebhook(part, deadline);
       }
     } catch (err) {
-      console.error(`[discord] send failed: ${(err as Error).message}`);
+      console.error(`[discord] send failed: ${this.errorText(err)}`);
     }
   }
 
@@ -126,7 +126,7 @@ export class DiscordNotifier {
     try {
       res = await postChannelMessage(bot.token, bot.channelId, part, this.botTimeoutMs);
     } catch (err) {
-      throw new PostFailure(undefined, (err as Error).message);
+      throw new PostFailure(undefined, this.errorText(err));
     }
     if (!res.ok) throw new PostFailure(res.status, `HTTP ${res.status}`);
   }
@@ -150,6 +150,13 @@ export class DiscordNotifier {
       }
     }
     await this.deliverViaWebhook(part);
+  }
+
+  // A fetch error can quote the request URL (the webhook URL embeds its token),
+  // so logged error text has the bot token and every URL cut out.
+  private errorText(err: unknown): string {
+    const token = this.config?.bot?.token;
+    return redactSecrets(err instanceof Error ? err.message : String(err), token ? [token] : []);
   }
 
   // Maps an HTTP status that means "the bot is unusable" to its owner-facing reason
@@ -177,7 +184,7 @@ export class DiscordNotifier {
       const res = await postWebhook(webhookUrl, part, remaining);
       if (!res.ok) console.error(`[discord] send rejected: HTTP ${res.status} — check the webhook URL`);
     } catch (err) {
-      console.error(`[discord] send failed: ${(err as Error).message}`);
+      console.error(`[discord] send failed: ${this.errorText(err)}`);
     }
   }
 }

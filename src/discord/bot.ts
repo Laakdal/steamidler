@@ -8,7 +8,7 @@ import {
   type Interaction,
 } from 'discord.js';
 import type { BotConfig } from './config.js';
-import { escapeMarkdown, splitMessage } from './format.js';
+import { escapeMarkdown, redactSecrets, splitMessage } from './format.js';
 import { FATAL_CLOSE_CODES, GatewayHealth } from './health.js';
 import { BOT_DOWN_REASONS, type DiscordNotifier } from './notifier.js';
 import { registerCommands } from './rest.js';
@@ -32,11 +32,10 @@ export interface BotHandle {
 const LOGIN_RETRY_MIN_MS = 30_000;
 const LOGIN_RETRY_MAX_MS = 5 * 60_000;
 
-// Error text from discord.js can embed request URLs (interaction callback URLs
-// carry the interaction token), so URLs and the bot token are cut before logging.
+// discord.js errors can quote interaction callback URLs, which carry the
+// interaction token, so only the redacted message is ever logged.
 function safeMessage(err: unknown, token: string): string {
-  const message = err instanceof Error ? err.message : String(err);
-  return message.split(token).join('<token>').replace(/https?:\/\/\S+/g, '<url>');
+  return redactSecrets(err instanceof Error ? err.message : String(err), [token]);
 }
 
 // Ephemeral, mention-free, markdown-escaped reply, split so a long /status

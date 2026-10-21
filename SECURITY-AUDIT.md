@@ -394,7 +394,7 @@ The §7 table gains these rows. All of them are Discord, and the user opts in to
 - **Fallback:** a bot post that fails is retried through the webhook, so no notification is lost. A 401, 403 or 404 marks the bot down and sends one offline notice through the webhook. So do a fatal Gateway close (4004, 4010–4014) and a Gateway outage longer than 2 minutes. Recovery posts one online notice through the bot. Without a webhook, undelivered text goes to the console.
 - **Time bounds:** `send()` never rejects and is capped per part at 4 s for the bot and 4 s for the webhook. The bot is closed after the final notification, capped at 1 s, so `systemctl stop` stays within seconds.
 - **No stray rejections:** every promise in `bot.ts` has a catch, and every client has an `error` listener. A failed login is retried with a fresh client every 30 s, backing off to 5 min. A rejected token or fatal close stops the retries. The failed client's listeners are removed, so it can never answer a command twice.
-- **Logging:** `[discord]` log lines print the error message with URLs and the bot token stripped. discord.js errors carry request URLs, and a callback URL embeds the interaction token. `handleCrash` now prints the stack text with URLs stripped instead of the whole error object.
+- **Logging:** every `[discord]` log line that carries error text, from the bot and from the notifier, goes through `redactSecrets`, which cuts the bot token and every URL. discord.js errors carry request URLs, and a callback URL embeds the interaction token. Some `fetch` errors quote the request URL, and a webhook URL embeds its token. `handleCrash` now prints the stack text through the same helper instead of the whole error object.
 
 ### Remaining risks
 
@@ -408,7 +408,7 @@ The §7 table gains these rows. All of them are Discord, and the user opts in to
 | Check | Outcome |
 |---|---|
 | `pnpm build` (`tsc`, strict) | Passed, 0 errors |
-| Offline tests: throwaway `node:test` files against `dist/`, with `fetch` mocked and discord.js replaced by a fake module, no network | 102/102 passed: config 19, rest 5, setup 14, notifier 16, commands 15, health 10, selection 7, bot 16 |
+| Offline tests: throwaway `node:test` files against `dist/`, with `fetch` mocked and discord.js replaced by a fake module, no network | 105/105 passed: config 19, rest 5, setup 14, notifier 16, commands 15, health 10, selection 7, bot 16, redaction 3 |
 | What the tests cover | Tampered and partial config files; owner lock (other user, other server, DM); spoofed game values; hostile game names (`@everyone`, markdown, links, 300 characters); 32-game cap and last-game refusal; fallback routing for 401, 403, 404, 500, timeouts and hangs; `send()` timing; flapping Gateway (no notices) versus a 2-minute outage (one offline, one online notice); fatal close codes; login retry and backoff; destroy during setup; secrets absent from every log line |
 | Independent review of `bot.ts` and the `index.ts` wiring | 2 should-fix findings (a failed client being reused for retries, and retries after a fatal close) and 2 nits; all fixed, verified against the discord.js source |
 

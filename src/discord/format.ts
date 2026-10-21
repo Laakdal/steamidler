@@ -34,3 +34,13 @@ export function splitMessage(text: string, max = MAX_CONTENT_LENGTH): string[] {
   // Discord rejects empty or whitespace-only content
   return chunks.filter((c) => c.trim().length > 0);
 }
+
+// Error text can quote a request URL (webhook and interaction-callback URLs
+// embed tokens), so known secrets and every URL are cut before it is logged.
+export function redactSecrets(text: string, secrets: readonly string[] = []): string {
+  let out = text;
+  for (const secret of secrets) {
+    if (secret) out = out.split(secret).join('<token>');
+  }
+  return out.replace(/https?:\/\/\S+/g, '<url>');
+}
