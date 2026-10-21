@@ -8,7 +8,7 @@
 | **Target platform** | Windows 11 |
 | **Method** | Static analysis only — the application was never executed and no dependencies were installed |
 
-> **Local modification (2026-10-18):** Telegram notifications were removed and replaced with Discord webhooks after this audit. Sections below describe upstream v1.2.0 as audited; see **§13 Addendum** for what changed, the new network destination, and the effect on findings. Docker support was removed on 2026-10-19 (**§14**). `discord.js` 14.27.0 and 21 transitive packages were added on 2026-10-21 after review (**§15**). This local build is **no longer identical** to the published npm package.
+> **Local modification (2026-10-18):** Telegram notifications were removed and replaced with Discord webhooks after this audit. Sections below describe upstream v1.2.0 as audited; see **§13 Addendum** for what changed, the new network destination, and the effect on findings. Docker support was removed on 2026-10-19 (**§14**). `discord.js` 14.27.0 and 21 transitive packages were added on 2026-10-21 after review (**§15**), and the webhook notifier became a Discord bot with commands and a webhook fallback (**§16**). This local build is **no longer identical** to the published npm package.
 
 ---
 
@@ -327,7 +327,7 @@ For every package, `dist.integrity` from `registry.npmjs.org` equals the lockfil
 ### Effect on the project
 
 - **Node floor:** `undici@6.29.0` requires Node `>=18.17`, so `package.json` `engines.node` is now `>=18.17.0`. The VPS deployment uses Node 22.
-- **New outbound destinations** (Discord Gateway, `discord.com/api/v10`) and the bot token as a new secret are documented with the bot itself, not here. At this point the library is installed but not yet imported by `src/`.
+- **New outbound destinations** (Discord Gateway, `discord.com/api/v10`) and the bot token as a new secret are covered in §16, with the bot itself.
 
 ### Validation
 
@@ -339,3 +339,79 @@ For every package, `dist.integrity` from `registry.npmjs.org` equals the lockfil
 | `pnpm build` (`tsc`) | Passed, 0 errors |
 
 **Data sent externally during this review:** package names and versions to `registry.npmjs.org`. No source code, credentials, or personal data.
+
+## 16. Addendum — Discord bot control panel (2026-10-21)
+
+The webhook notifier from §13 became a Discord bot the user creates for themselves. The bot posts the notifications and takes `/add`, `/remove` and `/status` from its owner. The webhook stays as an optional backup route. Design: `docs/superpowers/specs/2026-10-19-discord-control-panel-design.md`. Dependency: `discord.js` 14.27.0, reviewed in §15. Commits `48b0098` to `b916e80` on branch `discord-bot`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `src/notifications/discord.ts` | **Deleted**; split into the modules below |
+| `src/discord/config.ts` | `discord.json` load and save. Bot fields are all-or-nothing and validated on every load (token shape, numeric snowflake IDs); the webhook still goes through `parseWebhookUrl` |
+| `src/discord/format.ts` | `escapeMarkdown`, `splitMessage` (moved from §13's module) |
+| `src/discord/rest.ts` | REST calls through `fetch` with timeouts; `DiscordApiError` carries only a status and a caller-written message |
+| `src/discord/setup.ts` | `--setup-discord`: token check, owner and server lookup, channel pick, optional webhook, test posts, command registration |
+| `src/discord/notifier.ts` | `DiscordNotifier`: bot first, webhook fallback, offline and online notices |
+| `src/discord/commands.ts` | Pure command logic and the owner check |
+| `src/discord/health.ts` | `GatewayHealth`: 2-minute offline grace, fatal close codes |
+| `src/discord/bot.ts` | discord.js Gateway client that answers the commands |
+| `src/selection.ts` | Selection diff extracted from the `E` editor, shared with the commands |
+| `src/index.ts` | `controlPanel`, bot start in `startIdling`, capped bot shutdown, redacted crash log |
+
+### New secret: the bot token
+
+- Stored in `~/.steam-idler/discord.json` next to the webhook URL, written with `writeFileAtomic(..., 0o600)` (enforced on Linux, a no-op on Windows, as M1).
+- Whoever holds it controls the bot account: it can read and post wherever the bot has access. The exposure is narrowed by:
+  - the invite, which asks only for View Channel and Send Messages (permissions `3072`, scopes `bot applications.commands`);
+  - the `Guilds` Gateway intent only, with no privileged intents (message content, members, presence);
+  - commands registered in one server only.
+- The token does **not** let anyone change the idling: the owner check runs inside steamidler (below).
+- Revocation: **Reset Token** in the Developer Portal. The running bot then reports itself offline through the webhook (REST 401, or Gateway close 4004), stops retrying, and asks for `--setup-discord` and a restart.
+
+### Who can control the idler
+
+- Every interaction, autocomplete included, is checked against the owner's user ID and the configured server ID before anything else. Other users, other servers and DMs get an ephemeral "not allowed" reply, or an empty suggestion list, and nothing changes. The owner ID comes from the application (`GET /oauth2/applications/@me`); for a team application, setup asks which member.
+- Commands carry `default_member_permissions: "0"`, so Discord hides them from non-admins as a first layer.
+- A client can send any string as the game value. It is accepted only as a plain digit string naming a game in the library (`/add`) or in the selection (`/remove`). `"1e3"`, `" 10 "` and `"-1"` are rejected.
+- Commands change only the running session, through the same guards and selection diff as the local editor. They never write favorites and cannot stop the idler, log in, or change the exempt game. The 32-game cap is checked in the command and again in `controlPanel.add`.
+- Replies are ephemeral, markdown-escaped, mention-free, and split at 2000 characters.
+
+### Network destinations
+
+The §7 table gains these rows. All of them are Discord, and the user opts in to each:
+
+| Destination | Initiated by | Data sent | Auth |
+|---|---|---|---|
+| `https://discord.com/api/v10/...` (users, applications, guilds, channels, commands) | `src/discord/rest.ts`, `setup.ts` | Setup lookups, notification text, command definitions | Bot token header |
+| Discord Gateway (`wss://`, URL from `GET /gateway/bot`) | `discord.js` in `src/discord/bot.ts` | Identify and heartbeats; receives interactions | Bot token |
+| `https://discord.com/api/v10/interactions/<id>/<token>/callback` | `discord.js` | Command replies and autocomplete choices | Interaction token in the URL |
+| `https://discord.com/api/webhooks/<id>/<token>` | `src/discord/notifier.ts` | Notification text when the bot is down or fails a post | Token in the URL (unchanged from §13) |
+
+### Failure isolation
+
+- **Fallback:** a bot post that fails is retried through the webhook, so no notification is lost. A 401, 403 or 404 marks the bot down and sends one offline notice through the webhook. So do a fatal Gateway close (4004, 4010–4014) and a Gateway outage longer than 2 minutes. Recovery posts one online notice through the bot. Without a webhook, undelivered text goes to the console.
+- **Time bounds:** `send()` never rejects and is capped per part at 4 s for the bot and 4 s for the webhook. The bot is closed after the final notification, capped at 1 s, so `systemctl stop` stays within seconds.
+- **No stray rejections:** every promise in `bot.ts` has a catch, and every client has an `error` listener. A failed login is retried with a fresh client every 30 s, backing off to 5 min. A rejected token or fatal close stops the retries. The failed client's listeners are removed, so it can never answer a command twice.
+- **Logging:** `[discord]` log lines print the error message with URLs and the bot token stripped. discord.js errors carry request URLs, and a callback URL embeds the interaction token. `handleCrash` now prints the stack text with URLs stripped instead of the whole error object.
+
+### Remaining risks
+
+- discord.js runs some internal promises fire-and-forget. If one rejected without reaching our handlers, the process-wide `unhandledRejection` handler would treat it as a crash and exit with code 1, and systemd would restart it. Not observed; recorded as a library-level risk.
+- After a failed login, discord.js may keep reconnecting the failed client's shard on its own. That connection has no listeners, so it cannot act, and it ends when the process exits.
+- Two steamidler processes with the same bot token would both answer every command. The README says to run one at a time.
+- The token and webhook URL are plaintext on disk, as M1.
+
+### Validation
+
+| Check | Outcome |
+|---|---|
+| `pnpm build` (`tsc`, strict) | Passed, 0 errors |
+| Offline tests: throwaway `node:test` files against `dist/`, with `fetch` mocked and discord.js replaced by a fake module, no network | 102/102 passed: config 19, rest 5, setup 14, notifier 16, commands 15, health 10, selection 7, bot 16 |
+| What the tests cover | Tampered and partial config files; owner lock (other user, other server, DM); spoofed game values; hostile game names (`@everyone`, markdown, links, 300 characters); 32-game cap and last-game refusal; fallback routing for 401, 403, 404, 500, timeouts and hangs; `send()` timing; flapping Gateway (no notices) versus a 2-minute outage (one offline, one online notice); fatal close codes; login retry and backoff; destroy during setup; secrets absent from every log line |
+| Independent review of `bot.ts` and the `index.ts` wiring | 2 should-fix findings (a failed client being reused for retries, and retries after a fatal close) and 2 nits; all fixed, verified against the discord.js source |
+
+**Not performed:** a real Discord connection, a real Steam session, and the systemd unit on a live server. These are on the user's live checklist.
+
+**Found while writing the deployment guide:** `steam-user` keeps its own files under `~/.local/share/node-steamuser`. The README's systemd unit makes the system read-only (`ProtectSystem=strict`) and lists that directory in `ReadWritePaths`, so steam-user's writes, which it otherwise drops silently, keep working.
