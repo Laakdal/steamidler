@@ -32,19 +32,30 @@ export interface BotHandle {
 const LOGIN_RETRY_MIN_MS = 30_000;
 const LOGIN_RETRY_MAX_MS = 5 * 60_000;
 
+// discord.js and @discordjs/ws run some reconnect work as fire-and-forget
+// promises. A rejection from inside them is a Discord problem, not a reason to
+// stop idling, so the process-wide handler checks the stack for library frames.
+const DISCORD_LIBRARY_FRAME = /[\\/](?:@discordjs|discord\.js)[\\/]/;
+
+// True when an unhandled rejection was raised inside the Discord libraries.
+export function isDiscordLibraryError(reason: unknown): boolean {
+  return reason instanceof Error && typeof reason.stack === 'string' && DISCORD_LIBRARY_FRAME.test(reason.stack);
+}
+
 // discord.js errors can quote interaction callback URLs, which carry the
 // interaction token, so only the redacted message is ever logged.
 function safeMessage(err: unknown, token: string): string {
   return redactSecrets(err instanceof Error ? err.message : String(err), [token]);
 }
 
-// Ephemeral, mention-free, markdown-escaped reply, split so a long /status
-// still fits Discord's 2000-character limit.
+// Ephemeral, mention-free, embed-free, markdown-escaped reply, split so a long
+// /status still fits Discord's 2000-character limit.
 async function replyPrivately(interaction: ChatInputCommandInteraction, text: string): Promise<void> {
+  const flags = MessageFlags.Ephemeral | MessageFlags.SuppressEmbeds;
   const [first, ...rest] = splitMessage(escapeMarkdown(text));
-  await interaction.reply({ content: first, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+  await interaction.reply({ content: first, flags, allowedMentions: { parse: [] } });
   for (const part of rest) {
-    await interaction.followUp({ content: part, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+    await interaction.followUp({ content: part, flags, allowedMentions: { parse: [] } });
   }
 }
 

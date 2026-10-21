@@ -183,12 +183,13 @@ steamidler only makes outgoing connections (to Steam and Discord), so the server
    sudo useradd --system --create-home steamidler
    ```
 
-4. Run it interactively once as that user, over SSH: log in with the QR code shown in the terminal, star your favorites with `F`, start idling with `Enter`, then quit with `Q`. Set up Discord the same way.
+4. Run it interactively once as that user, over SSH: log in with the QR code shown in the terminal, accept the offer to set up Discord, star your favorites with `F`, start idling with `Enter`, then quit with `Q`.
 
    ```bash
    sudo -u steamidler -H node /opt/steamidler/dist/index.js
-   sudo -u steamidler -H node /opt/steamidler/dist/index.js --setup-discord
    ```
+
+   To set up or change Discord later, run the same command with `--setup-discord`.
 
 5. Create `/etc/systemd/system/steamidler.service`:
 

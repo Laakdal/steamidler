@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import * as readline from 'node:readline';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { confirm } from '@inquirer/prompts';
 import chalk from 'chalk';
@@ -27,8 +28,8 @@ import { loadFavorites, loadExempt } from './storage/favorites.js';
 import { loadCredentials, saveCredentials } from './storage/credentials.js';
 import { DiscordNotifier } from './discord/notifier.js';
 import { runDiscordSetup } from './discord/setup.js';
-import { saveDiscordDisabled } from './discord/config.js';
-import { startBot, type BotHandle } from './discord/bot.js';
+import { CONFIG_PATH as DISCORD_CONFIG_PATH, saveDiscordDisabled } from './discord/config.js';
+import { isDiscordLibraryError, startBot, type BotHandle } from './discord/bot.js';
 import { redactSecrets } from './discord/format.js';
 import { formatDailyReport } from './notifications/dailyReport.js';
 import { MAX_IDLE_GAMES, IS_HEADLESS } from './constants.js';
@@ -741,7 +742,7 @@ async function main(): Promise<void> {
   // Terminal closed / SSH dropped: still stop playing and log off cleanly
   process.on('SIGHUP', () => handleShutdown(0));
   process.on('uncaughtException', handleCrash);
-  process.on('unhandledRejection', handleCrash);
+  process.on('unhandledRejection', handleRejection);
 
   // Steam renews a refresh token that is close to expiry at logon; the old one
   // is invalid from then on, so persist the new one or the next start fails.
@@ -901,7 +902,9 @@ async function runInteractive(): Promise<void> {
         console.log(chalk.yellow(`Discord setup failed: ${(err as Error).message}`));
         console.log(chalk.gray('Continuing without notifications. Run --setup-discord to retry.'));
       }
-    } else {
+    } else if (!existsSync(DISCORD_CONFIG_PATH)) {
+      // An existing but invalid file is left alone: overwriting it would throw
+      // away a token or webhook the user may only need to fix by hand.
       saveDiscordDisabled();
     }
     discord.reload();
@@ -1055,18 +1058,7 @@ async function enterEditMode(): Promise<void> {
   if (newSelection.length === 0) {
     showError('No games selected - keeping current selection');
   } else {
-    const next = computeSelection(
-      { idling: idlingGames, pausing: pausingGames, paused: pausedGames },
-      newSelection,
-      newExemptAppId,
-      (sel, isExempt) => createIdlingGame(sel, gamesById.get(sel.appid), isExempt),
-      randomIdlePhaseMs,
-      new Date()
-    );
-    idlingGames = next.idling;
-    pausedGames = next.paused;
-    pausingGames = next.pausing;
-    exemptAppId = newExemptAppId;
+    installSelection(newSelection, newExemptAppId);
   }
 
   // Always re-send on the way out, selection changed or not: an unblock that
@@ -1091,9 +1083,12 @@ async function enterEditMode(): Promise<void> {
   if (!isWaitingForResume) startDisplayLoop();
 }
 
-// Applies a changed selection from the Discord commands exactly as edit mode does.
-function applyRemoteSelection(newSelection: GameSelection[], newExemptAppId: number | null): void {
-  if (!playingBlocked) bankElapsed(idlingGames);
+// Runs the shared selection diff and installs the result, for edit mode and the
+// Discord commands alike. A game the diff creates (new, or removed and re-added
+// the same day) drops its old day-start snapshot, so the daily report counts it
+// from zero instead of clamping a negative gain to 0m.
+function installSelection(newSelection: GameSelection[], newExemptAppId: number | null): void {
+  const previous = new Set([...idlingGames, ...pausingGames, ...pausedGames]);
   const next = computeSelection(
     { idling: idlingGames, pausing: pausingGames, paused: pausedGames },
     newSelection,
@@ -1106,6 +1101,15 @@ function applyRemoteSelection(newSelection: GameSelection[], newExemptAppId: num
   pausedGames = next.paused;
   pausingGames = next.pausing;
   exemptAppId = newExemptAppId;
+  for (const game of [...idlingGames, ...pausingGames, ...pausedGames]) {
+    if (!previous.has(game)) dayStartAccumulatedMs.delete(game.appid);
+  }
+}
+
+// Applies a changed selection from the Discord commands exactly as edit mode does.
+function applyRemoteSelection(newSelection: GameSelection[], newExemptAppId: number | null): void {
+  if (!playingBlocked) bankElapsed(idlingGames);
+  installSelection(newSelection, newExemptAppId);
   if (!isWaitingForResume) client.setGamesPlaying(idlingGames.map((g) => g.appid));
   if (!isInEditMode) renderStatus();
 }
@@ -1151,7 +1155,12 @@ const controlPanel: ControlPanel = {
     const game = gamesById.get(appid);
     const current = getGameCurrentSelection();
     if (!game || current.some((g) => g.appid === appid) || current.length >= MAX_IDLE_GAMES) return;
-    applyRemoteSelection([...current, { appid, name: game.name }], exemptAppId);
+    // Adding never makes a game exempt: a stored exempt game that wasn't being
+    // idled (left unselected, or past 32 favorites) loses exempt for this session.
+    applyRemoteSelection(
+      [...current, { appid, name: game.name }],
+      exemptAppId === appid ? null : exemptAppId
+    );
   },
   // Drops a game from the live selection, clearing exempt if it held it; unselected ids are ignored.
   remove(appid: number): void {
@@ -1397,6 +1406,23 @@ function stopBot(): Promise<void> {
   return Promise.race([botHandle.destroy().catch(() => {}), cap]);
 }
 
+// Secrets that error text must never carry to the console or Discord
+function discordSecrets(): string[] {
+  const token = discord.botConfig()?.token;
+  return token ? [token] : [];
+}
+
+// Discord stays optional: a rejection from inside the Discord libraries is
+// logged and idling carries on; any other rejection is a real crash.
+function handleRejection(reason: unknown): void {
+  if (isDiscordLibraryError(reason)) {
+    const error = reason as Error;
+    console.error(`[discord] ignored a library error: ${redactSecrets(error.stack ?? error.message, discordSecrets())}`);
+    return;
+  }
+  handleCrash(reason);
+}
+
 // Mitigation C: last-resort flush on a fatal error. Best-effort stop+logout to
 // salvage the in-flight session's playtime tail before exiting.
 function handleCrash(err: unknown): void {
@@ -1405,7 +1431,7 @@ function handleCrash(err: unknown): void {
   // Stack text only: logging the whole object would print library-attached
   // fields such as a Discord request URL, which can embed an interaction token.
   const detail = err instanceof Error ? err.stack ?? err.message : String(err);
-  console.error('\nFatal error:', redactSecrets(detail));
+  console.error('\nFatal error:', redactSecrets(detail, discordSecrets()));
 
   if (resumeTimer) clearTimeout(resumeTimer);
   if (resumeNotifyTimer) clearTimeout(resumeNotifyTimer);
@@ -1426,7 +1452,8 @@ function handleCrash(err: unknown): void {
     // ignore — best effort
   }
 
-  const message = err instanceof Error ? err.message : String(err);
+  // Redacted like the console copy: this text goes to Discord
+  const message = redactSecrets(err instanceof Error ? err.message : String(err), discordSecrets());
   const finalMessage = stopNotified
     ? Promise.resolve()
     : discord.send(
@@ -1448,6 +1475,6 @@ main().catch((err: Error) => {
     showGoodbye();
     process.exit(0);
   }
-  showError(err.message);
+  showError(redactSecrets(err.message, discordSecrets()));
   process.exit(1);
 });

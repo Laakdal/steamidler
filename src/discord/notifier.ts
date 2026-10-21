@@ -37,6 +37,8 @@ class PostFailure extends Error {
 export class DiscordNotifier {
   private config: DiscordConfig | null = null;
   private route: BotRoute = 'none';
+  // The Gateway is back but the online notice failed: sends try the bot first
+  private recoveryPending = false;
   private readonly botTimeoutMs: number;
   private readonly webhookTimeoutMs: number;
 
@@ -50,6 +52,7 @@ export class DiscordNotifier {
   reload(): void {
     this.config = loadDiscordConfig();
     this.route = this.config?.bot && !this.config.disabled ? 'up' : 'none';
+    this.recoveryPending = false;
   }
 
   // A config file exists and loaded; the first-run prompt keys off its absence
@@ -80,24 +83,36 @@ export class DiscordNotifier {
     }
   }
 
-  // Called when the bot cannot work; announces once per outage via the webhook
+  // Called when the bot cannot work (Gateway outage, rejected token); commands
+  // stop working too, since they arrive over the Gateway.
   async botDown(reason: string, fatal: boolean): Promise<void> {
-    await this.markDown(reason, fatal);
+    await this.markDown(reason, fatal, true);
   }
 
   // Shared by botDown and the failover path; deadline (ms epoch) caps the
   // webhook time so the notice and the failed part share one webhook budget.
-  private async markDown(reason: string, fatal: boolean, deadline?: number): Promise<void> {
+  // Announces once per outage, plus once more if the outage turns fatal, since
+  // a fatal cause (token rejected) needs the owner to act.
+  private async markDown(reason: string, fatal: boolean, commandsAffected: boolean, deadline?: number): Promise<void> {
     try {
       if (!this.isConfigured() || !this.botConfig()) return;
       if (this.route === 'fatal') return;
-      if (this.route === 'down') {
-        // Already announced; a later fatal cause only changes whether botUp may restore it
-        if (fatal) this.route = 'fatal';
+      // A new fault cancels any recovery left over from the previous outage, so a
+      // working REST post during a Gateway outage never claims commands are back
+      this.recoveryPending = false;
+      const hasWebhook = !!this.config?.webhookUrl;
+      if (!fatal && !hasWebhook) {
+        // Nowhere else to send: keep trying the bot, which may recover by itself
+        console.error(`[discord] bot problem: ${reason} (no backup webhook)`);
         return;
       }
+      if (this.route === 'down' && !fatal) return;
       this.route = fatal ? 'fatal' : 'down';
-      const notice = `⚠️ Discord bot offline (${reason}). Notifications are coming through the backup webhook. /add, /remove and /status won't work until the bot is back.`;
+      const route = hasWebhook
+        ? 'Notifications are coming through the backup webhook.'
+        : "Notifications can't reach Discord until this is fixed.";
+      const commands = commandsAffected ? " /add, /remove and /status won't work until the bot is back." : '';
+      const notice = `⚠️ Discord bot offline (${reason}). ${route}${commands}`;
       for (const part of splitMessage(escapeMarkdown(notice))) {
         await this.deliverViaWebhook(part, deadline);
       }
@@ -106,17 +121,32 @@ export class DiscordNotifier {
     }
   }
 
-  // Called when the Gateway reconnects after a non-fatal outage
+  // Called when the Gateway reconnects after a non-fatal outage. If the online
+  // notice cannot be posted yet, the next send retries the bot instead of
+  // staying on the webhook until another outage.
   async botUp(): Promise<void> {
     try {
       const bot = this.botConfig();
       if (!bot || this.route !== 'down') return;
-      for (const part of splitMessage(escapeMarkdown('✅ Discord bot back online. Commands work again.'))) {
-        await this.postBot(bot, part);
+      try {
+        await this.postOnlineNotice(bot);
+      } catch {
+        // Only if nothing changed the route meanwhile (a new fault, a fatal close)
+        if (this.route === 'down') this.recoveryPending = true;
+        return;
       }
+      if (this.route !== 'down') return;
       this.route = 'up';
-    } catch {
-      // Stay down silently; the next botUp gets another chance
+      this.recoveryPending = false;
+    } catch (err) {
+      console.error(`[discord] send failed: ${this.errorText(err)}`);
+    }
+  }
+
+  // Posts the recovery notice through the bot; throws PostFailure like postBot
+  private async postOnlineNotice(bot: BotConfig): Promise<void> {
+    for (const part of splitMessage(escapeMarkdown('✅ Discord bot back online. Commands work again.'))) {
+      await this.postBot(bot, part);
     }
   }
 
@@ -131,23 +161,39 @@ export class DiscordNotifier {
     if (!res.ok) throw new PostFailure(res.status, `HTTP ${res.status}`);
   }
 
-  // Sends one part along the current route, failing over to the webhook
+  // Sends one part along the current route, failing over to the webhook.
+  // Worst case per part is one bot timeout plus one webhook timeout.
   private async deliver(part: string): Promise<void> {
     const bot = this.botConfig();
-    if (this.route === 'up' && bot) {
+    const recovering = this.route === 'down' && this.recoveryPending;
+    if ((this.route === 'up' || recovering) && bot) {
       try {
         await this.postBot(bot, part);
-        return;
       } catch (err) {
         const failure = err as PostFailure;
         console.error(`[discord] bot post failed: ${failure.message}`);
         const reason = failure.status === undefined ? null : this.reasonForStatus(failure.status);
+        // A definite refusal ends the recovery attempts; a timeout or 5xx retries next send
+        if (recovering && reason) this.recoveryPending = false;
         // One webhook budget covers the offline notice and this part
         const deadline = Date.now() + this.webhookTimeoutMs;
-        if (reason) await this.markDown(reason.text, reason.fatal, deadline);
+        if (reason) await this.markDown(reason.text, reason.fatal, reason.commandsAffected, deadline);
         await this.deliverViaWebhook(part, deadline);
         return;
       }
+      // Re-read after the await: a concurrent send may have switched back already,
+      // or a new fault or fatal close may have landed during the post
+      if (recovering && this.route === 'down' && this.recoveryPending) {
+        // The bot works again: switch back, then announce it (one bot timeout)
+        this.route = 'up';
+        this.recoveryPending = false;
+        try {
+          await this.postOnlineNotice(bot);
+        } catch (err) {
+          console.error(`[discord] bot post failed: ${(err as PostFailure).message}`);
+        }
+      }
+      return;
     }
     await this.deliverViaWebhook(part);
   }
@@ -159,11 +205,12 @@ export class DiscordNotifier {
     return redactSecrets(err instanceof Error ? err.message : String(err), token ? [token] : []);
   }
 
-  // Maps an HTTP status that means "the bot is unusable" to its owner-facing reason
-  private reasonForStatus(status: number): { text: string; fatal: boolean } | null {
-    if (status === 401) return { text: BOT_DOWN_REASONS.tokenRejected, fatal: true };
-    if (status === 403) return { text: BOT_DOWN_REASONS.noPermission, fatal: false };
-    if (status === 404) return { text: BOT_DOWN_REASONS.channelNotFound, fatal: false };
+  // Maps an HTTP status that means "the bot is unusable" to its owner-facing
+  // reason. A lost channel leaves commands working: they need no channel access.
+  private reasonForStatus(status: number): { text: string; fatal: boolean; commandsAffected: boolean } | null {
+    if (status === 401) return { text: BOT_DOWN_REASONS.tokenRejected, fatal: true, commandsAffected: true };
+    if (status === 403) return { text: BOT_DOWN_REASONS.noPermission, fatal: false, commandsAffected: false };
+    if (status === 404) return { text: BOT_DOWN_REASONS.channelNotFound, fatal: false, commandsAffected: false };
     return null;
   }
 

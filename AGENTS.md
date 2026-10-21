@@ -56,7 +56,7 @@ docs/                       Steam research notes; designs in docs/superpowers/sp
 - **32-game cap** (`MAX_IDLE_GAMES`): Steam's limit per `gamesPlayed` call. Everything that builds a selection respects it.
 - **Steam logons back off.** Rate-limit EResults wait at least ~30 min; terminal EResults stop instead of retrying.
 - **Shutdown always reaches `process.exit`.** Shutdown and crash paths `await Promise.all([grace, discord.send(...)])`, then `stopBot()` (capped at 1 s). So `DiscordNotifier.send()` never rejects and is time-bounded (4 s bot + 4 s webhook per part), and `BotHandle.destroy()` never rejects.
-- **Discord stays optional.** A Discord failure is logged and never stops idling, changes an exit code, or delays shutdown. `process.on('unhandledRejection')` routes to `handleCrash`, so every promise in Discord code has a catch.
+- **Discord stays optional.** A Discord failure is logged and never stops idling, changes an exit code, or delays shutdown. Every promise in our Discord code has a catch: `unhandledRejection` goes to `handleRejection`, which ignores only rejections raised inside the Discord libraries (`isDiscordLibraryError`) and sends everything else to `handleCrash`.
 - **The bot acts only through `controlPanel`.** Its guards (`busyReason`) and `computeSelection` apply every remote change; `/add` and `/remove` change the running session only and never write favorites. The bot is started only from `startIdling`, so a `--setup-discord` run or an unstarted session never answers commands.
 
 ## 5. Idling state model (`src/index.ts`)

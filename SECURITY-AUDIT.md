@@ -391,14 +391,21 @@ The §7 table gains these rows. All of them are Discord, and the user opts in to
 
 ### Failure isolation
 
-- **Fallback:** a bot post that fails is retried through the webhook, so no notification is lost. A 401, 403 or 404 marks the bot down and sends one offline notice through the webhook. So do a fatal Gateway close (4004, 4010–4014) and a Gateway outage longer than 2 minutes. Recovery posts one online notice through the bot. Without a webhook, undelivered text goes to the console.
+- **Fallback with a webhook:**
+  - A bot post that fails is retried through the webhook, so no notification is lost.
+  - A 401, 403 or 404 marks the bot down and sends one offline notice through the webhook. So do a fatal Gateway close (4004, 4010–4014) and a Gateway outage longer than 2 minutes.
+  - An outage that later turns fatal (a rejected token) sends a second notice, since the owner must act.
+  - When the Gateway is back, one online notice is posted through the bot. If that post fails, each later send tries the bot first and switches back on the first success, still within 8 s per part. A new fault cancels this, so a REST post that works during a Gateway outage never announces recovery.
+- **Without a webhook:** a non-fatal fault keeps the bot route, since there is nowhere else to send. Undelivered text and a fatal notice go to the console.
 - **Time bounds:** `send()` never rejects and is capped per part at 4 s for the bot and 4 s for the webhook. The bot is closed after the final notification, capped at 1 s, so `systemctl stop` stays within seconds.
-- **No stray rejections:** every promise in `bot.ts` has a catch, and every client has an `error` listener. A failed login is retried with a fresh client every 30 s, backing off to 5 min. A rejected token or fatal close stops the retries. The failed client's listeners are removed, so it can never answer a command twice.
-- **Logging:** every `[discord]` log line that carries error text, from the bot and from the notifier, goes through `redactSecrets`, which cuts the bot token and every URL. discord.js errors carry request URLs, and a callback URL embeds the interaction token. Some `fetch` errors quote the request URL, and a webhook URL embeds its token. `handleCrash` now prints the stack text through the same helper instead of the whole error object.
+- **No stray rejections:** every promise in `bot.ts` has a catch, and every client has an `error` listener. `@discordjs/ws` runs some reconnect work as fire-and-forget promises, so the process-wide `unhandledRejection` handler logs and ignores a rejection whose stack is inside `discord.js` or `@discordjs/*`. Every other rejection is still a crash. A failed login is retried with a fresh client every 30 s, backing off to 5 min. A rejected token or fatal close stops the retries. The failed client's listeners are removed, so it can never answer a command twice.
+- **Logging:** every `[discord]` log line that carries error text, from the bot and from the notifier, goes through `redactSecrets`, which cuts the bot token and every URL. discord.js errors carry request URLs, and a callback URL embeds the interaction token. Some `fetch` errors quote the request URL, and a webhook URL embeds its token. `handleCrash` prints the stack text through the same helper instead of the whole error object, and the crash message posted to Discord is redacted the same way.
 
 ### Remaining risks
 
-- discord.js runs some internal promises fire-and-forget. If one rejected without reaching our handlers, the process-wide `unhandledRejection` handler would treat it as a crash and exit with code 1, and systemd would restart it. Not observed; recorded as a library-level risk.
+- An ignored library rejection can leave the Gateway connection without a reconnect in progress (for example, an `@discordjs/ws` reconnect that rejects). The bot then counts as offline after 2 minutes, notifications move to the webhook, and commands stay unavailable until steamidler restarts. Idling is not affected. The ignored error is logged with a redacted stack.
+- The same filter also ignores a throw from our own Gateway event listeners (`health.ts`), since those run inside discord.js's call chain. Only Discord code can be affected; idling runs outside it.
+- A synchronous exception thrown inside discord.js (as opposed to a rejection) would still reach `uncaughtException`, crash and exit with code 1, and systemd would restart it. Continuing after an uncaught exception is unsafe, so this stays a crash. Not observed.
 - After a failed login, discord.js may keep reconnecting the failed client's shard on its own. That connection has no listeners, so it cannot act, and it ends when the process exits.
 - Two steamidler processes with the same bot token would both answer every command. The README says to run one at a time.
 - The token and webhook URL are plaintext on disk, as M1.
@@ -408,9 +415,11 @@ The §7 table gains these rows. All of them are Discord, and the user opts in to
 | Check | Outcome |
 |---|---|
 | `pnpm build` (`tsc`, strict) | Passed, 0 errors |
-| Offline tests: throwaway `node:test` files against `dist/`, with `fetch` mocked and discord.js replaced by a fake module, no network | 105/105 passed: config 19, rest 5, setup 14, notifier 16, commands 15, health 10, selection 7, bot 16, redaction 3 |
+| Offline tests: throwaway `node:test` files against `dist/`, with `fetch` mocked and discord.js replaced by a fake module, no network | 114/114 passed: config 19, rest 5, setup 14, notifier 24, commands 15, health 10, selection 7, bot 17, redaction 3 |
 | What the tests cover | Tampered and partial config files; owner lock (other user, other server, DM); spoofed game values; hostile game names (`@everyone`, markdown, links, 300 characters); 32-game cap and last-game refusal; fallback routing for 401, 403, 404, 500, timeouts and hangs; `send()` timing; flapping Gateway (no notices) versus a 2-minute outage (one offline, one online notice); fatal close codes; login retry and backoff; destroy during setup; secrets absent from every log line |
 | Independent review of `bot.ts` and the `index.ts` wiring | 2 should-fix findings (a failed client being reused for retries, and retries after a fatal close) and 2 nits; all fixed, verified against the discord.js source |
+| Independent whole-branch review | 4 should-fix findings and 5 nits, all fixed: no-webhook and failed-recovery routing; library rejections crashing the idler; unredacted crash text sent to Discord; a game removed and re-added the same day reported as 0m; `/add` making the stored exempt game exempt; missing SUPPRESS_EMBEDS on replies; the offline notice's wording; a fatal turn of an outage going unannounced; an invalid `discord.json` overwritten by the first-run prompt. The `index.ts` parts are checked by reading the code only, since `index.ts` cannot be loaded offline |
+| Independent review of those fixes | 2 should-fix findings in the new recovery logic (a stale recovery flag announcing "back online" during a later Gateway outage; a stale check after an `await` allowing a duplicate notice or overriding a fatal close) and a missing remaining risk; all fixed and covered by 3 tests |
 
 **Not performed:** a real Discord connection, a real Steam session, and the systemd unit on a live server. These are on the user's live checklist.
 
