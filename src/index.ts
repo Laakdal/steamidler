@@ -28,6 +28,7 @@ import { loadCredentials, saveCredentials } from './storage/credentials.js';
 import { DiscordNotifier } from './discord/notifier.js';
 import { runDiscordSetup } from './discord/setup.js';
 import { saveDiscordDisabled } from './discord/config.js';
+import { startBot, type BotHandle } from './discord/bot.js';
 import { formatDailyReport } from './notifications/dailyReport.js';
 import { MAX_IDLE_GAMES, IS_HEADLESS } from './constants.js';
 import { createSpinner } from './ui/spinner.js';
@@ -91,9 +92,12 @@ const CRASH_FLUSH_GRACE_MS = 2000;
 const ABORT_SETTLE_MS = 5000;
 const SHUTDOWN_FLUSH_GRACE_MS = 1500;
 const TAKEOVER_DRIFT_DELAY_MS = 120_000;
+// Cap on closing the Discord Gateway at exit, so a hung socket never delays it
+const BOT_DESTROY_TIMEOUT_MS = 1000;
 
 const client = new SteamClient();
 const discord = new DiscordNotifier();
+let botHandle: BotHandle | null = null;
 let isIdling = false;
 let idlingGames: IdlingGame[] = [];
 let pausedGames: IdlingGame[] = [];
@@ -1105,7 +1109,7 @@ function applyRemoteSelection(newSelection: GameSelection[], newExemptAppId: num
   if (!isInEditMode) renderStatus();
 }
 
-// What the Discord bot may see and do; Task 7b hands it to the bot client.
+// What the Discord bot may see and do; startIdling hands it to the bot client.
 const controlPanel: ControlPanel = {
   // Reports why a remote change is unsafe right now, or null when it is fine.
   busyReason(): string | null {
@@ -1140,11 +1144,12 @@ const controlPanel: ControlPanel = {
       ...pausedGames.map((g) => view(g, 'paused')),
     ];
   },
-  // Adds a library game to the live selection; unknown or already-selected ids are ignored.
+  // Adds a library game to the live selection; unknown or already-selected ids,
+  // and anything past Steam's 32-game limit, are ignored.
   add(appid: number): void {
     const game = gamesById.get(appid);
     const current = getGameCurrentSelection();
-    if (!game || current.some((g) => g.appid === appid)) return;
+    if (!game || current.some((g) => g.appid === appid) || current.length >= MAX_IDLE_GAMES) return;
     applyRemoteSelection([...current, { appid, name: game.name }], exemptAppId);
   },
   // Drops a game from the live selection, clearing exempt if it held it; unselected ids are ignored.
@@ -1310,6 +1315,11 @@ function startIdling(games: GameSelection[]): void {
   const startedSuffix = exemptName ? ` (exempt: ${exemptName})` : '';
   discord.send(`▶️ Idling started — ${idlingGames.length} games${startedSuffix}`);
 
+  // The bot connects only once idling has started, so a --setup-discord run or
+  // a session still at the selector never answers commands for this account.
+  const botConfig = discord.botConfig();
+  if (botConfig) botHandle = startBot(botConfig, controlPanel, discord);
+
   // A kick or drop between login and here (e.g. while the selector was open)
   // had no handler yet; without this the screen would say "Idling" forever
   // while nothing is played and no resume is ever attempted.
@@ -1373,7 +1383,17 @@ function handleShutdown(exitCode = 0): void {
   // Grace so the clean logOff socket write (the playtime-commit trigger) can
   // land, and the final Discord post (own 5s timeout) gets to finish.
   const grace = new Promise((resolve) => setTimeout(resolve, SHUTDOWN_FLUSH_GRACE_MS));
-  void Promise.all([grace, finalMessage]).then(() => process.exit(exitCode));
+  void Promise.all([grace, finalMessage])
+    .then(() => stopBot())
+    .then(() => process.exit(exitCode));
+}
+
+// Closes the Gateway after the final notification went out. Never rejects and
+// is time-capped, so both exit paths always reach process.exit.
+function stopBot(): Promise<void> {
+  if (!botHandle) return Promise.resolve();
+  const cap = new Promise<void>((resolve) => setTimeout(resolve, BOT_DESTROY_TIMEOUT_MS));
+  return Promise.race([botHandle.destroy().catch(() => {}), cap]);
 }
 
 // Mitigation C: last-resort flush on a fatal error. Best-effort stop+logout to
@@ -1381,7 +1401,10 @@ function handleShutdown(exitCode = 0): void {
 function handleCrash(err: unknown): void {
   if (isShuttingDown) return;
   isShuttingDown = true;
-  console.error('\nFatal error:', err);
+  // Stack text only: logging the whole object would print library-attached
+  // fields such as a Discord request URL, which can embed an interaction token.
+  const detail = err instanceof Error ? err.stack ?? err.message : String(err);
+  console.error('\nFatal error:', detail.replace(/https?:\/\/\S+/g, '<url>'));
 
   if (resumeTimer) clearTimeout(resumeTimer);
   if (resumeNotifyTimer) clearTimeout(resumeNotifyTimer);
@@ -1412,7 +1435,9 @@ function handleCrash(err: unknown): void {
       );
 
   const grace = new Promise((resolve) => setTimeout(resolve, CRASH_FLUSH_GRACE_MS));
-  void Promise.all([grace, finalMessage]).then(() => process.exit(1));
+  void Promise.all([grace, finalMessage])
+    .then(() => stopBot())
+    .then(() => process.exit(1));
 }
 
 main().catch((err: Error) => {
