@@ -1,4 +1,5 @@
 import type { BotConfig } from './config.js';
+import type { Embed } from './statusEmbed.js';
 
 export const API_BASE = 'https://discord.com/api/v10';
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -18,20 +19,23 @@ export class DiscordApiError extends Error {
 }
 
 // One authenticated REST call through built-in fetch, aborted after timeoutMs
+// or earlier when the caller's signal fires (shutdown cutting a slow request)
 export function discordApi(
   token: string,
-  method: 'GET' | 'POST' | 'PUT',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH',
   path: string,
   body?: unknown,
-  timeoutMs = DEFAULT_TIMEOUT_MS
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  signal?: AbortSignal
 ): Promise<Response> {
   const headers: Record<string, string> = { Authorization: `Bot ${token}` };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const timeout = AbortSignal.timeout(timeoutMs);
   return fetch(`${API_BASE}${path}`, {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
   });
 }
 
@@ -49,6 +53,34 @@ export function postChannelMessage(
   timeoutMs: number
 ): Promise<Response> {
   return discordApi(token, 'POST', `/channels/${channelId}/messages`, messageBody(content), timeoutMs);
+}
+
+// Posts the status box. No SUPPRESS_EMBEDS flag (it would hide the box itself),
+// mentions off, and a nonce Discord enforces: a retry of a post that timed out
+// but landed returns that message instead of creating a second box.
+export function postEmbedMessage(
+  token: string,
+  channelId: string,
+  embed: Embed,
+  nonce: string,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<Response> {
+  const body = { embeds: [embed], allowed_mentions: { parse: [] }, nonce, enforce_nonce: true };
+  return discordApi(token, 'POST', `/channels/${channelId}/messages`, body, timeoutMs, signal);
+}
+
+// Replaces the status box's embed in place
+export function editEmbedMessage(
+  token: string,
+  channelId: string,
+  messageId: string,
+  embed: Embed,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<Response> {
+  const body = { embeds: [embed], allowed_mentions: { parse: [] } };
+  return discordApi(token, 'PATCH', `/channels/${channelId}/messages/${messageId}`, body, timeoutMs, signal);
 }
 
 // Posts one message through a webhook URL (the URL itself is the credential)
