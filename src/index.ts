@@ -31,6 +31,8 @@ import { runDiscordSetup } from './discord/setup.js';
 import { CONFIG_PATH as DISCORD_CONFIG_PATH, saveDiscordDisabled } from './discord/config.js';
 import { isDiscordLibraryError, startBot, type BotHandle } from './discord/bot.js';
 import { redactSecrets } from './discord/format.js';
+import { StatusPanel } from './discord/statusPanel.js';
+import type { PanelGame, StatusSnapshot } from './discord/statusEmbed.js';
 import { formatDailyReport } from './notifications/dailyReport.js';
 import { MAX_IDLE_GAMES, IS_HEADLESS } from './constants.js';
 import { createSpinner } from './ui/spinner.js';
@@ -100,6 +102,8 @@ const BOT_DESTROY_TIMEOUT_MS = 1000;
 const client = new SteamClient();
 const discord = new DiscordNotifier();
 let botHandle: BotHandle | null = null;
+// The live status box in Discord; created in startIdling when a status channel is set
+let statusPanel: StatusPanel | null = null;
 let isIdling = false;
 let idlingGames: IdlingGame[] = [];
 let pausedGames: IdlingGame[] = [];
@@ -200,13 +204,43 @@ function scheduleResumeNotification(): void {
   }, RESUME_NOTIFY_GRACE_MS);
 }
 
-// Renders the status table from current state
+// Renders the status table from current state. Every state change repaints
+// through here, so it also asks the Discord status box for a prompt update.
 function renderStatus(): void {
   showIdlingStatus(idlingGames, pausedGames, pausingGames, {
     waitingReason: isWaitingForResume ? waitingReason : null,
     playingBlocked,
     showKeyHints: !isHeadless,
   });
+  statusPanel?.nudge();
+}
+
+// What the Discord status box shows, computed like the terminal table: no
+// live delta while frozen or for games that are not idling. Waiting wins over
+// blocked, since a disconnected session cannot be blocked meaningfully.
+function statusSnapshot(): StatusSnapshot {
+  const now = Date.now();
+  const frozen = isFrozen();
+  const view = (g: IdlingGame, state: PanelGame['state']): PanelGame => {
+    const gainedMs = g.accumulatedMs + (state === 'idling' && !frozen ? now - g.startTime.getTime() : 0);
+    return {
+      name: g.name,
+      state,
+      exempt: g.nextPauseAtMs === null,
+      totalMinutes: g.initialPlaytime + Math.floor(gainedMs / 60000),
+      gainedMs,
+      cooldownEndsAt: state === 'cooldown' ? g.pauseUntil : null,
+    };
+  };
+  return {
+    state: isShuttingDown ? 'stopped' : isWaitingForResume ? 'waiting' : playingBlocked ? 'blocked' : 'idling',
+    waitingReason: isWaitingForResume ? waitingReason : null,
+    games: [
+      ...idlingGames.map((g) => view(g, 'idling')),
+      ...pausingGames.map((g) => view(g, 'cooldown')),
+      ...pausedGames.map((g) => view(g, 'paused')),
+    ],
+  };
 }
 
 // (Re)starts the 60s tick: advances the randomizer and refreshes the table. On a
@@ -1329,6 +1363,13 @@ function startIdling(games: GameSelection[]): void {
   // a session still at the selector never answers commands for this account.
   const botConfig = discord.botConfig();
   if (botConfig) botHandle = startBot(botConfig, controlPanel, discord);
+  // The status box goes live with idling too; it talks REST, so it keeps
+  // updating while the Gateway reconnects
+  const statusChannelId = botConfig?.statusChannelId;
+  if (botConfig && statusChannelId && !statusPanel) {
+    statusPanel = new StatusPanel({ ...botConfig, statusChannelId }, statusSnapshot, { version: packageVersion() });
+    statusPanel.start();
+  }
 
   // A kick or drop between login and here (e.g. while the selector was open)
   // had no handler yet; without this the screen would say "Idling" forever
@@ -1389,11 +1430,14 @@ function handleShutdown(exitCode = 0): void {
   const finalMessage =
     !stopNotified && startTime ? discord.send('🛑 Idling stopped — quit by user') : Promise.resolve();
 
+  // The status box turns red; stop() never rejects and is capped at 4s
+  const panelStopped = statusPanel ? statusPanel.stop() : Promise.resolve();
+
   showGoodbye();
   // Grace so the clean logOff socket write (the playtime-commit trigger) can
   // land, and the final Discord post (own 5s timeout) gets to finish.
   const grace = new Promise((resolve) => setTimeout(resolve, SHUTDOWN_FLUSH_GRACE_MS));
-  void Promise.all([grace, finalMessage])
+  void Promise.all([grace, finalMessage, panelStopped])
     .then(() => stopBot())
     .then(() => process.exit(exitCode));
 }
@@ -1462,8 +1506,9 @@ function handleCrash(err: unknown): void {
           : `🛑 steamidler crashed before idling started (${message}).`
       );
 
+  const panelStopped = statusPanel ? statusPanel.stop() : Promise.resolve();
   const grace = new Promise((resolve) => setTimeout(resolve, CRASH_FLUSH_GRACE_MS));
-  void Promise.all([grace, finalMessage])
+  void Promise.all([grace, finalMessage, panelStopped])
     .then(() => stopBot())
     .then(() => process.exit(1));
 }
