@@ -729,7 +729,7 @@ async function main(): Promise<void> {
 
   if (isSetupDiscord) {
     try {
-      await runDiscordSetup();
+      await runDiscordSetup(packageVersion());
       process.exit(0);
     } catch (err) {
       showError((err as Error).message);
@@ -897,7 +897,7 @@ async function runInteractive(): Promise<void> {
     });
     if (wantsDiscord) {
       try {
-        await runDiscordSetup();
+        await runDiscordSetup(packageVersion());
       } catch (err) {
         console.log(chalk.yellow(`Discord setup failed: ${(err as Error).message}`));
         console.log(chalk.gray('Continuing without notifications. Run --setup-discord to retry.'));

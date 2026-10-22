@@ -3,6 +3,9 @@ import chalk from 'chalk';
 import { isBotTokenShape, loadDiscordConfig, parseWebhookUrl, saveDiscordConfig } from './config.js';
 import type { BotConfig } from './config.js';
 import { DiscordApiError, discordApi, postChannelMessage, postWebhook, registerCommands } from './rest.js';
+import { buildStatusEmbed } from './statusEmbed.js';
+import { publishStatus } from './statusPanel.js';
+import { loadStatusMessage, saveStatusMessage, type StatusMessageRef } from './statusStore.js';
 
 const TEST_TIMEOUT_MS = 10_000;
 
@@ -71,9 +74,27 @@ export async function listTextChannels(token: string, guildId: string): Promise<
     .map((c) => ({ id: c.id, name: c.name }));
 }
 
-// Minimal permissions: View Channel + Send Messages (3072)
+// Minimal permissions: View Channel + Send Messages + Embed Links (19456).
+// Embed Links is for the live status box; Discord may drop a bot's embed without it.
 export function inviteUrl(applicationId: string): string {
-  return `https://discord.com/oauth2/authorize?client_id=${applicationId}&scope=bot%20applications.commands&permissions=3072`;
+  return `https://discord.com/oauth2/authorize?client_id=${applicationId}&scope=bot%20applications.commands&permissions=19456`;
+}
+
+// Shows the status box's placeholder, editing the box a previous setup left
+// in that channel instead of orphaning it. Throws a message safe to print when
+// Discord refuses it or hides the embed (no Embed Links).
+async function placeStatusBox(bot: BotConfig, channelId: string, version: string): Promise<StatusMessageRef> {
+  const embed = buildStatusEmbed({ state: 'starting', waitingReason: null, games: [] }, new Date(), null, version);
+  const nonce = `setup${Date.now().toString(36)}`;
+  const result = await publishStatus(bot.token, channelId, loadStatusMessage(), embed, nonce, TEST_TIMEOUT_MS);
+  if (!result.ok) {
+    if (result.status === undefined) throw new DiscordApiError(0, 'Could not reach Discord while showing the status box');
+    throw new DiscordApiError(result.status, `Discord rejected the status box: HTTP ${result.status}`);
+  }
+  if (!result.embedShown) {
+    throw new Error('Discord hid the status box: give the bot Embed Links in that channel, then run --setup-discord again');
+  }
+  return { channelId, messageId: result.messageId };
 }
 
 // Runs one network step, mapping a non-2xx or a network failure to a DiscordApiError that is safe to print
@@ -88,7 +109,7 @@ async function step(what: string, run: () => Promise<Response>): Promise<void> {
 }
 
 // Proves every piece works before anything is stored: a half-working setup is never saved
-export async function finishSetup(bot: BotConfig, webhookUrl: string | null): Promise<void> {
+export async function finishSetup(bot: BotConfig, webhookUrl: string | null, version: string): Promise<void> {
   await step('the bot test message', () =>
     postChannelMessage(bot.token, bot.channelId, '✅ steamidler bot connected.', TEST_TIMEOUT_MS)
   );
@@ -98,11 +119,16 @@ export async function finishSetup(bot: BotConfig, webhookUrl: string | null): Pr
     );
   }
   await step('the slash command registration', () => registerCommands(bot));
+  const statusBox = bot.statusChannelId ? await placeStatusBox(bot, bot.statusChannelId, version) : null;
   if (!saveDiscordConfig({ bot, webhookUrl })) throw new Error('Could not save the Discord settings');
+  // Losing this only means the first idling run posts a fresh box
+  if (statusBox && !saveStatusMessage(statusBox)) {
+    console.log(chalk.yellow('  The status box will be posted again when idling starts.'));
+  }
 }
 
 // Interactive glue over the tested functions above (--setup-discord)
-export async function runDiscordSetup(): Promise<void> {
+export async function runDiscordSetup(version: string): Promise<void> {
   console.log(chalk.cyan.bold('\n  Setup Discord bot\n'));
   console.log(chalk.gray('  1. Open https://discord.com/developers/applications and click New Application.'));
   console.log(chalk.gray('  2. On the Bot page, click Reset Token and copy it.'));
@@ -113,7 +139,9 @@ export async function runDiscordSetup(): Promise<void> {
 
   const identity = await fetchBotIdentity(token);
   console.log(chalk.green(`\n  ✓ Bot "${identity.botName}" recognised`));
-  console.log(chalk.gray('\n  Invite the bot to your server with this link (only View Channel + Send Messages):'));
+  console.log(
+    chalk.gray('\n  Invite the bot to your server with this link (only View Channel, Send Messages and Embed Links):')
+  );
   console.log(`  ${inviteUrl(identity.applicationId)}\n`);
 
   if (identity.owners.length === 0) throw new Error('Could not find the owner of this application');
@@ -146,6 +174,11 @@ export async function runDiscordSetup(): Promise<void> {
     message: 'Notification channel:',
     choices: channels.map((c) => ({ name: `#${c.name}`, value: c.id })),
   });
+  // A channel of its own keeps the box on screen; notifications would push it up
+  const statusChannelId = await select<string | null>({
+    message: 'Live status channel (a box edited every minute; best in its own channel):',
+    choices: [{ name: 'None', value: null }, ...channels.map((c) => ({ name: `#${c.name}`, value: c.id }))],
+  });
 
   const current = loadDiscordConfig()?.webhookUrl ?? null;
   const raw = (
@@ -165,9 +198,11 @@ export async function runDiscordSetup(): Promise<void> {
   }
 
   await finishSetup(
-    { token, applicationId: identity.applicationId, ownerId, guildId, channelId, statusChannelId: null },
-    webhookUrl
+    { token, applicationId: identity.applicationId, ownerId, guildId, channelId, statusChannelId },
+    webhookUrl,
+    version
   );
   console.log(chalk.green('\n  ✓ Test messages sent and commands registered — check the channel'));
+  if (statusChannelId) console.log(chalk.green('  ✓ Status box placed; it goes live when idling starts'));
   console.log(chalk.green('  ✓ Saved to ~/.steam-idler/discord.json\n'));
 }
