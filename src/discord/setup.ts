@@ -164,7 +164,10 @@ export async function runDiscordSetup(): Promise<void> {
     console.log(chalk.yellow('  No backup webhook: if the bot goes down, notifications will go silent.'));
   }
 
-  await finishSetup({ token, applicationId: identity.applicationId, ownerId, guildId, channelId }, webhookUrl);
+  await finishSetup(
+    { token, applicationId: identity.applicationId, ownerId, guildId, channelId, statusChannelId: null },
+    webhookUrl
+  );
   console.log(chalk.green('\n  ✓ Test messages sent and commands registered — check the channel'));
   console.log(chalk.green('  ✓ Saved to ~/.steam-idler/discord.json\n'));
 }

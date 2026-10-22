@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { writeFileAtomic } from '../storage/atomicWrite.js';
 
-const CONFIG_DIR = join(homedir(), '.steam-idler');
+export const CONFIG_DIR = join(homedir(), '.steam-idler');
 export const CONFIG_PATH = join(CONFIG_DIR, 'discord.json');
 
 export interface BotConfig {
@@ -12,6 +12,8 @@ export interface BotConfig {
   ownerId: string;
   guildId: string;
   channelId: string;
+  // Channel holding the live status box; null when the owner chose none
+  statusChannelId: string | null;
 }
 
 export interface DiscordConfig {
@@ -24,7 +26,7 @@ const WEBHOOK_HOSTS = new Set(['discord.com', 'discordapp.com', 'canary.discord.
 const WEBHOOK_PATH = /^\/api\/(?:v\d+\/)?webhooks\/\d+\/[\w-]+\/?$/;
 
 // Creates ~/.steam-idler on first write
-function ensureConfigDir(): void {
+export function ensureConfigDir(): void {
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
 }
 
@@ -93,7 +95,9 @@ export function loadDiscordConfig(): DiscordConfig | null {
       !isSnowflake(file.applicationId) ||
       !isSnowflake(file.ownerId) ||
       !isSnowflake(file.guildId) ||
-      !isSnowflake(file.channelId)
+      !isSnowflake(file.channelId) ||
+      // Optional, but a present value must be an ID like the others
+      (file.statusChannelId !== undefined && !isSnowflake(file.statusChannelId))
     ) {
       return invalid('bot settings are incomplete or malformed');
     }
@@ -103,6 +107,7 @@ export function loadDiscordConfig(): DiscordConfig | null {
       ownerId: file.ownerId,
       guildId: file.guildId,
       channelId: file.channelId,
+      statusChannelId: file.statusChannelId ?? null,
     };
   }
 
@@ -135,6 +140,7 @@ export function saveDiscordConfig(config: { bot: BotConfig | null; webhookUrl: s
     out.ownerId = config.bot.ownerId;
     out.guildId = config.bot.guildId;
     out.channelId = config.bot.channelId;
+    if (config.bot.statusChannelId) out.statusChannelId = config.bot.statusChannelId;
   }
   if (config.webhookUrl) out.webhookUrl = config.webhookUrl;
   return writeConfigFile(out);
