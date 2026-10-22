@@ -14,7 +14,7 @@ It started as a fork of `louisraetz/steamidled` v1.2.0 (commit `9f2b1ab`) and no
 - Docker support removed; systemd is the only documented way to run it as a service.
 - `SECURITY-AUDIT.md` records the audit of v1.2.0 and every security-relevant change since (§13 onward).
 
-Work happens on feature branches (`discord-bot`), with `main` as the base.
+Work happens on feature branches off `main`. Releases are `vX.Y.Z` tags on `main`, matching `package.json`, with notes in `CHANGELOG.md` and on the GitHub Releases page.
 
 ## 2. Project layout
 

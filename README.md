@@ -30,16 +30,16 @@ Based on [steamidled](https://github.com/louisraetz/steamidled) by louisraetz (M
 
 ## Installation
 
-This project is not published to npm. Build it from source:
+This project is not published to npm. Build a release from source:
 
 ```bash
-git clone https://github.com/Laakdal/steamidler.git
+git clone --branch v0.1.0 https://github.com/Laakdal/steamidler.git
 cd steamidler
 npx pnpm@10.34.6 install --frozen-lockfile --ignore-scripts
 npx pnpm@10.34.6 build
 ```
 
-The compiled CLI is `dist/index.js`.
+The compiled CLI is `dist/index.js`. Releases are listed on the [Releases page](https://github.com/Laakdal/steamidler/releases), and [CHANGELOG.md](CHANGELOG.md) says what changed in each. `main` may hold unreleased work.
 
 ## Usage
 
@@ -171,7 +171,7 @@ steamidler only makes outgoing connections (to Steam and Discord), so the server
 2. Clone and build as your admin user:
 
    ```bash
-   sudo git clone https://github.com/Laakdal/steamidler.git /opt/steamidler
+   sudo git clone --branch v0.1.0 https://github.com/Laakdal/steamidler.git /opt/steamidler
    cd /opt/steamidler
    sudo npx pnpm@10.34.6 install --frozen-lockfile --ignore-scripts
    sudo npx pnpm@10.34.6 build
@@ -238,7 +238,16 @@ sudo systemctl restart steamidler    # Restart (Discord changes reset to your fa
 sudo systemctl stop steamidler       # Stop; "🛑 Idling stopped" is posted to Discord
 ```
 
-To update, pull and rebuild in `/opt/steamidler` with the same commands as step 2 (`sudo git pull` first), then restart the service.
+To update, check [CHANGELOG.md](CHANGELOG.md) for the new release, then switch to its tag (`v0.2.0` below is an example), rebuild and restart:
+
+```bash
+cd /opt/steamidler
+sudo git fetch --tags
+sudo git checkout v0.2.0
+sudo npx pnpm@10.34.6 install --frozen-lockfile --ignore-scripts
+sudo npx pnpm@10.34.6 build
+sudo systemctl restart steamidler
+```
 
 This unit file has not yet been tested on a live server.
 
