@@ -424,3 +424,59 @@ The §7 table gains these rows. All of them are Discord, and the user opts in to
 **Not performed:** a real Discord connection, a real Steam session, and the systemd unit on a live server. These are on the user's live checklist.
 
 **Found while writing the deployment guide:** `steam-user` keeps its own files under `~/.local/share/node-steamuser`. The README's systemd unit makes the system read-only (`ProtectSystem=strict`) and lists that directory in `ReadWritePaths`, so steam-user's writes, which it otherwise drops silently, keep working.
+
+## 17. Addendum — Live status box (2026-10-23)
+
+steamidler can keep one rich-embed message in a status channel the owner picks at setup, edited every minute and after state changes, and turned red on shutdown. Design: `docs/superpowers/specs/2026-10-22-discord-status-panel-design.md`. Plan: `docs/superpowers/plans/2026-10-23-discord-status-panel.md`. Branch `discord-status-panel`. No new dependency.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `src/discord/config.ts` | Optional `statusChannelId`, validated as a snowflake on every load like the other IDs; a malformed value invalidates the file |
+| `src/discord/statusStore.ts` | **New.** `~/.steam-idler/discord-status.json` (`channelId`, `messageId`). No secret, written with `writeFileAtomic(..., 0o600)`, re-validated on load: anything but two snowflakes is ignored and a fresh box is posted |
+| `src/discord/statusEmbed.ts` | **New.** Pure embed builder |
+| `src/discord/statusPanel.ts` | **New.** `publishStatus` (edit, else post) and `StatusPanel` (timers, outcomes, shutdown) |
+| `src/discord/rest.ts` | `PATCH` added; `postEmbedMessage`, `editEmbedMessage`; optional abort signal combined with the timeout |
+| `src/discord/setup.ts` | Status channel prompt; placeholder box; invite permissions `3072` → `19456` |
+| `src/index.ts` | Snapshot of the idling state, panel start in `startIdling`, nudge on repaint, `stop()` in both exit paths |
+
+### Permissions
+
+The invite gains **Embed Links** (`19456` = View Channel + Send Messages + Embed Links). Discord's documentation does not say whether a bot needs it to send rich embeds, so steamidler does not depend on either answer: a 403, or a returned message with an empty `embeds` array, means the box is not showing. Setup then refuses to save, and at runtime one log line names the fix. Embed Links also lets the bot's links unfurl, but every other message still sets `SUPPRESS_EMBEDS`, and the box contains no URL.
+
+### Network destinations
+
+No new destination. The box uses `POST` and `PATCH` on `https://discord.com/api/v10/channels/<status channel>/messages[/<id>]` with the bot token header, the same host and authentication as §16. The embed has no author, footer or thumbnail icon, so Discord fetches nothing on its behalf.
+
+### Content
+
+- Game names go into code blocks. Backticks become `ˋ` and control characters become spaces, so a name cannot close the block or break a row. Names are clipped to 24 characters.
+- The waiting reason, the only other free text, goes through `escapeMarkdown`.
+- Every request carries `allowed_mentions: { parse: [] }`.
+- Field values stay within 1024 characters (a long section continues in further fields). With at most 32 games, the whole embed stays far below Discord's 6000-character cap.
+
+### Failure isolation
+
+- `StatusPanel` never throws out of a public method. `stop()` never rejects, aborts a request in flight, and resolves within 4 s. Both exit paths add it to the `Promise.all` they already await, so `process.exit` is always reached.
+- One request in flight at a time, 4 s timeout, edits at least 5 s apart, one per minute otherwise.
+- **401:** the panel stops for the run, and the notifier and bot already announce the rejected token. **403/404:** one log line when the problem starts. **429, 5xx and network errors:** silent, retried on the next tick.
+- **Duplicates:** posts carry a `nonce` with `enforce_nonce: true`, reused across retries, so a post that timed out but landed is returned by Discord instead of duplicated (within Discord's few-minute window).
+- Log lines carry only owner-facing text or `redactSecrets(err.message, [token])`, never a response body.
+
+### Remaining risks
+
+- If Discord rejects a post as too large or malformed (400), the box stays stale without a log line, since only 401/403/404 are reported. The builder's limits are covered by tests; the "… ago" countdown shows the staleness.
+- A post retried after Discord's nonce window could create a second box; the stored ID then follows the newer one and the older stays behind.
+- The status file and `statusChannelId` can be edited by anyone who can already edit `discord.json`; validation keeps their values to numeric IDs on discord.com.
+
+### Validation
+
+| Check | Outcome |
+|---|---|
+| `pnpm build` (`tsc`, strict) | Passed, 0 errors |
+| Offline tests, `fetch` mocked, no network | 156/156 passed: the 114 earlier tests (expectations updated for the new `statusChannelId` field and invite value) plus 42 new: status store 6, embed and REST 13, panel 15, setup 8 |
+| What the new tests cover | Tampered status files and `statusChannelId` values; hostile names (fences, `@everyone`, markdown, URLs, 300 characters, 32 games) within every limit; nonce reuse on retry; 401/403/404/empty-embeds handling and log-once; in-flight skipping and nudge coalescing; `stop()` within its cap while `fetch` hangs; no timers after stop; no token or URL in any log line |
+| `index.ts` wiring | Checked by reading the code: the panel is created only in `startIdling`, and both exit paths await it before `process.exit` |
+
+**Not performed:** a real Discord channel and a live run. These are on the owner's checklist.

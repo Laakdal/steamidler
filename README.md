@@ -107,10 +107,10 @@ A Discord bot of your own posts the notifications to a channel and lets you chan
 1. Open the [Discord Developer Portal](https://discord.com/developers/applications), click **New Application**, open its **Bot** page, click **Reset Token** and copy the token. No privileged intents are needed.
 2. Optional, recommended: in your server, open **Server Settings → Integrations → Webhooks**, create a webhook, and copy its URL. This is the backup route.
 3. Run `node dist/index.js --setup-discord` and paste the token. Typed secrets are masked.
-4. Open the invite link it prints and add the bot to your server. The link asks only for View Channel and Send Messages. If the bot was not in a server yet, run `--setup-discord` again after inviting it.
-5. Pick the server and the notification channel, then paste the backup webhook URL or press Enter to skip.
+4. Open the invite link it prints and add the bot to your server. The link asks only for View Channel, Send Messages and Embed Links. If the bot was not in a server yet, run `--setup-discord` again after inviting it.
+5. Pick the server, the notification channel and, optionally, a channel for the [live status box](#live-status-box), then paste the backup webhook URL or press Enter to skip.
 
-Setup posts a test message through the bot (and through the webhook, if given) and registers the commands. It saves the settings only if all of that works. The first interactive run also offers setup; declining stores `{ "disabled": true }` so the prompt does not come back. A config from an earlier version with only a webhook keeps working as notifications only.
+Setup posts a test message through the bot (and through the webhook, if given), registers the commands, and places the status box if you picked a channel for it. It saves the settings only if all of that works. The first interactive run also offers setup; declining stores `{ "disabled": true }` so the prompt does not come back. A config from an earlier version with only a webhook keeps working as notifications only.
 
 ### Commands
 
@@ -125,6 +125,21 @@ Setup posts a test message through the bot (and through the webhook, if given) a
 - **Changes last until steamidler restarts.** `/add` and `/remove` change the running session; your favorites stay as they are, so a restart idles your favorites again.
 - **Limits:** at most 32 games, and at least one stays selected. A change is refused while the game selector is open on the computer, while steamidler is disconnected from Steam, and before idling has started.
 - The bot comes online when idling starts. Run one steamidler per bot token at a time: two copies would both answer every command.
+
+### Live status box
+
+One message in a channel of its own that shows what steamidler is doing right now, edited in place instead of posted again:
+
+- A coloured bar and a status line:
+  - 🟢 idling;
+  - 🟡 waiting to resume after a disconnect, or paused while a game is played on this account elsewhere;
+  - 🛑 stopped.
+- "Next update in …", counting down on your device. If the box stops updating (the server is down, the token was reset), it reads "… ago" instead, so a stale box shows itself.
+- Sections for 🎮 idling games (total hours and time gained this session), ❄️ games in cooldown (time left) and ⏸️ paused games. The exempt game is marked `∞`.
+
+It updates every minute, and within about 5 seconds of `/add`, `/remove`, a disconnect or a resume. A restart keeps editing the same message; if you delete it, a new one appears within a minute. When steamidler stops, the box turns red.
+
+To turn it on, run `--setup-discord` again, pick a channel at **Live status channel** (an empty one, so notifications don't push the box out of view), then restart steamidler. The bot needs **Embed Links** in that channel: the invite link asks for it, and setup stops with a message if Discord hides the box. A bot invited before this feature needs Embed Links added to its role, or the new invite link opened again.
 
 ### Messages
 
@@ -158,7 +173,8 @@ All state is stored in `~/.steam-idler/`:
 ~/.steam-idler/
 ├── credentials.json          # Saved Steam login token
 ├── favorites-<account>.json  # Favorites and the exempt game
-└── discord.json              # Discord bot token, IDs, optional backup webhook
+├── discord.json              # Discord bot token, IDs, optional backup webhook
+└── discord-status.json       # Which message is the live status box (no secrets)
 ```
 
 `credentials.json` and `discord.json` contain secrets in plain text and are written with owner-only permissions on Linux. Do not share or commit them.

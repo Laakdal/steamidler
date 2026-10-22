@@ -29,12 +29,15 @@ src/
   storage/                  ~/.steam-idler files: credentials, favorites, atomic writes
   discord/config.ts         discord.json load (validated every time) and save
   discord/format.ts         markdown escaping and 2000-character splitting
-  discord/rest.ts           REST calls through fetch: channel posts, webhook posts, command registration
+  discord/rest.ts           REST calls through fetch: channel posts, webhook posts, status box post/edit, command registration
   discord/notifier.ts       DiscordNotifier: bot first, webhook fallback, offline/online notices
   discord/setup.ts          --setup-discord flow
   discord/commands.ts       pure /add /remove /status logic and the owner check
   discord/health.ts         GatewayHealth: 2 min offline grace, fatal close codes
   discord/bot.ts            discord.js Gateway client that answers the commands
+  discord/statusEmbed.ts    pure builder for the live status box embed (layout, size limits)
+  discord/statusPanel.ts    StatusPanel: keeps the status box current (60 s timer, nudges, final red edit)
+  discord/statusStore.ts    discord-status.json: which message is the status box (validated on load)
   notifications/dailyReport.ts  midnight report text
   ui/                       selector, status table, prompts, spinner
   types/                    shared types and hand-written module declarations (modules.d.ts)
@@ -55,7 +58,7 @@ docs/                       Steam research notes; designs in docs/superpowers/sp
 - **Headless leaves stdin alone.** `setRawMode` in a backgrounded process triggers SIGTTOU and stops it; guard keyboard code with `isHeadless` / `IS_HEADLESS`.
 - **32-game cap** (`MAX_IDLE_GAMES`): Steam's limit per `gamesPlayed` call. Everything that builds a selection respects it.
 - **Steam logons back off.** Rate-limit EResults wait at least ~30 min; terminal EResults stop instead of retrying.
-- **Shutdown always reaches `process.exit`.** Shutdown and crash paths `await Promise.all([grace, discord.send(...)])`, then `stopBot()` (capped at 1 s). So `DiscordNotifier.send()` never rejects and is time-bounded (4 s bot + 4 s webhook per part), and `BotHandle.destroy()` never rejects.
+- **Shutdown always reaches `process.exit`.** Shutdown and crash paths `await Promise.all([grace, discord.send(...), statusPanel.stop()])`, then `stopBot()` (capped at 1 s). So `DiscordNotifier.send()` never rejects and is time-bounded (4 s bot + 4 s webhook per part), `StatusPanel.stop()` never rejects and resolves within 4 s, and `BotHandle.destroy()` never rejects.
 - **Discord stays optional.** A Discord failure is logged and never stops idling, changes an exit code, or delays shutdown. Every promise in our Discord code has a catch: `unhandledRejection` goes to `handleRejection`, which ignores only rejections raised inside the Discord libraries (`isDiscordLibraryError`) and sends everything else to `handleCrash`.
 - **The bot acts only through `controlPanel`.** Its guards (`busyReason`) and `computeSelection` apply every remote change; `/add` and `/remove` change the running session only and never write favorites. The bot is started only from `startIdling`, so a `--setup-discord` run or an unstarted session never answers commands.
 
@@ -86,7 +89,7 @@ The project was audited before first use; keep it auditable.
 - **Secrets:** the Steam refresh token (`credentials.json`), and the Discord bot token and backup webhook URL (`discord.json`; the URL embeds its own token) live in plaintext under `~/.steam-idler/`. Write them with `writeFileAtomic(path, data, 0o600)` (a no-op on Windows, enforced on Linux). Keep them out of logs, console output, error messages and Discord messages, including full URLs and HTTP response bodies that echo them. Log `err.message` with URLs and the token stripped, never a whole error object: discord.js errors carry request URLs that embed interaction tokens.
 - **Validate stored config on every load,** not only at setup, so a hand-edited file cannot redirect traffic (`parseWebhookUrl`, `loadDiscordConfig`).
 - **Outbound network** goes only to Steam (through steam-user/steam-session) and Discord (`discord.com/api`, the Gateway, webhooks). Adding a destination needs the user's agreement and a `SECURITY-AUDIT.md` entry.
-- **Text sent to Discord** is user-controlled (game names, error strings): escape markdown, disable mentions (`allowed_mentions: { parse: [] }`), suppress embeds, split at 2000 characters. Command replies are ephemeral and answer only the configured owner in the configured server.
+- **Text sent to Discord** is user-controlled (game names, error strings): escape markdown, disable mentions (`allowed_mentions: { parse: [] }`), suppress embeds, split at 2000 characters. Command replies are ephemeral and answer only the configured owner in the configured server. The one exception is the status box, which *is* an embed: it is built only by `buildStatusEmbed`, carries no URL or icon, puts game names in code blocks with backticks and control characters neutralised, and stays within Discord's embed limits.
 - **Dependency rule:** before adding or upgrading a package, review it (registry metadata, maintainers, install scripts, the full transitive tree, every lockfile hash against the registry, advisories), require every new package version to be at least 14 days old, record the result in `SECURITY-AUDIT.md`, and get the user's agreement. Install only with the pinned pnpm, `--frozen-lockfile --ignore-scripts`; `npm install` ignores the lockfile.
 - When behavior relevant to the audit changes, update `SECURITY-AUDIT.md` in the same change.
 
