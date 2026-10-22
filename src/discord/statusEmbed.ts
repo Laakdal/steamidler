@@ -39,14 +39,24 @@ const NAME_WIDTH = 24;
 const EXEMPT_SUFFIX = ' ∞';
 // A field continuing a section needs a name, and Discord rejects an empty one
 const CONTINUED = '​';
+// The waiting reason quotes Steam's error text, which has no length bound of its own
+const MAX_REASON = 200;
+
+// Clips by code point, not UTF-16 unit, so an emoji is never cut in half
+// (a lone surrogate can make Discord reject the whole box)
+function clip(text: string, max: number): string {
+  const chars = Array.from(text);
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : text;
+}
 
 // Code blocks show text literally, but a backtick could close the block and a
 // newline would break the row, so both are neutralised instead of escaped.
 function rowName(game: PanelGame): string {
   const clean = game.name.replace(/`/g, 'ˋ').replace(/[\r\n\t\u0000-\u001f]/g, ' ');
   const width = game.exempt ? NAME_WIDTH - EXEMPT_SUFFIX.length : NAME_WIDTH;
-  const clipped = clean.length > width ? `${clean.slice(0, width - 1)}…` : clean;
-  return (game.exempt ? clipped + EXEMPT_SUFFIX : clipped).padEnd(NAME_WIDTH);
+  const clipped = clip(clean, width);
+  const padding = Math.max(0, NAME_WIDTH - Array.from(clipped).length - (game.exempt ? EXEMPT_SUFFIX.length : 0));
+  return (game.exempt ? clipped + EXEMPT_SUFFIX : clipped) + ' '.repeat(padding);
 }
 
 // "1,234h", like the terminal table's Total column
@@ -94,7 +104,7 @@ function stateLine(snap: StatusSnapshot, idlingCount: number): string {
     case 'idling':
       return `🟢 Idling ${idlingCount} game${idlingCount === 1 ? '' : 's'}`;
     case 'waiting':
-      return `🟡 Waiting to resume — ${escapeMarkdown(snap.waitingReason ?? 'disconnected')}`;
+      return `🟡 Waiting to resume — ${escapeMarkdown(clip(snap.waitingReason ?? 'disconnected', MAX_REASON))}`;
     case 'blocked':
       return '🟡 Paused — a game is being played on this account elsewhere';
     case 'stopped':
@@ -105,8 +115,8 @@ function stateLine(snap: StatusSnapshot, idlingCount: number): string {
 }
 
 // Builds the live status box. Pure, so the layout and Discord's size limits
-// are tested without a network; with at most 32 games and clipped rows the
-// whole embed stays far below Discord's 6000-character cap.
+// are tested without a network; with at most 32 games, clipped rows and a
+// clipped reason the whole embed stays far below Discord's 6000-character cap.
 export function buildStatusEmbed(snap: StatusSnapshot, now: Date, nextUpdateAt: Date | null, version: string): Embed {
   const idling = snap.games.filter((g) => g.state === 'idling');
   const cooldown = snap.games.filter((g) => g.state === 'cooldown');

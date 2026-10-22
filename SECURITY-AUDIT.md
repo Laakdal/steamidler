@@ -451,8 +451,8 @@ No new destination. The box uses `POST` and `PATCH` on `https://discord.com/api/
 
 ### Content
 
-- Game names go into code blocks. Backticks become `ˋ` and control characters become spaces, so a name cannot close the block or break a row. Names are clipped to 24 characters.
-- The waiting reason, the only other free text, goes through `escapeMarkdown`.
+- Game names go into code blocks. Backticks become `ˋ` and control characters become spaces, so a name cannot close the block or break a row. Names are clipped to 24 characters, by code point, so an emoji is never cut in half.
+- The waiting reason, the only other free text, is clipped to 200 characters and goes through `escapeMarkdown`.
 - Every request carries `allowed_mentions: { parse: [] }`.
 - Field values stay within 1024 characters (a long section continues in further fields). With at most 32 games, the whole embed stays far below Discord's 6000-character cap.
 
@@ -460,13 +460,13 @@ No new destination. The box uses `POST` and `PATCH` on `https://discord.com/api/
 
 - `StatusPanel` never throws out of a public method. `stop()` never rejects, aborts a request in flight, and resolves within 4 s. Both exit paths add it to the `Promise.all` they already await, so `process.exit` is always reached.
 - One request in flight at a time, 4 s timeout, edits at least 5 s apart, one per minute otherwise.
-- **401:** the panel stops for the run, and the notifier and bot already announce the rejected token. **403/404:** one log line when the problem starts. **429, 5xx and network errors:** silent, retried on the next tick.
+- **401:** the panel stops for the run, and the notifier and bot already announce the rejected token. **Any other 4xx except 429:** one log line when the problem starts, naming the fix for 403 (permissions), 404 (channel gone) and Discord code 50006 (an empty message, i.e. the embed was stripped: Embed Links). Only the numeric error code is read from a failed reply, never its text. **429, 5xx and network errors:** silent, retried on the next tick.
+- A stored box that this bot may not edit (403 on the edit, e.g. left by an earlier bot application) is replaced by a new post; a real permission problem still surfaces, because the post fails too.
 - **Duplicates:** posts carry a `nonce` with `enforce_nonce: true`, reused across retries, so a post that timed out but landed is returned by Discord instead of duplicated (within Discord's few-minute window).
 - Log lines carry only owner-facing text or `redactSecrets(err.message, [token])`, never a response body.
 
 ### Remaining risks
 
-- If Discord rejects a post as too large or malformed (400), the box stays stale without a log line, since only 401/403/404 are reported. The builder's limits are covered by tests; the "… ago" countdown shows the staleness.
 - A post retried after Discord's nonce window could create a second box; the stored ID then follows the newer one and the older stays behind.
 - The status file and `statusChannelId` can be edited by anyone who can already edit `discord.json`; validation keeps their values to numeric IDs on discord.com.
 
@@ -475,8 +475,9 @@ No new destination. The box uses `POST` and `PATCH` on `https://discord.com/api/
 | Check | Outcome |
 |---|---|
 | `pnpm build` (`tsc`, strict) | Passed, 0 errors |
-| Offline tests, `fetch` mocked, no network | 156/156 passed: the 114 earlier tests (expectations updated for the new `statusChannelId` field and invite value) plus 42 new: status store 6, embed and REST 13, panel 15, setup 8 |
+| Offline tests, `fetch` mocked, no network | 166/166 passed: the 114 earlier tests (expectations updated for the new `statusChannelId` field and invite value) plus 52 new: status store 6, embed and REST 16, panel 19, setup 11 |
 | What the new tests cover | Tampered status files and `statusChannelId` values; hostile names (fences, `@everyone`, markdown, URLs, 300 characters, 32 games) within every limit; nonce reuse on retry; 401/403/404/empty-embeds handling and log-once; in-flight skipping and nudge coalescing; `stop()` within its cap while `fetch` hangs; no timers after stop; no token or URL in any log line |
 | `index.ts` wiring | Checked by reading the code: the panel is created only in `startIdling`, and both exit paths await it before `process.exit` |
+| Independent whole-branch review | No critical findings. 2 important (a 400 such as code 50006 was silent; an edit refused with 403 never fell back to a post) and 3 minor ones upgraded by effect (unclipped waiting reason, emoji split by clipping, setup 403 naming no fix): all fixed, each with a test that failed first. 2 minor deferred: a deduped post at shutdown can leave the box green, and an unreadable success reply is read as a hidden box |
 
 **Not performed:** a real Discord channel and a live run. These are on the owner's checklist.

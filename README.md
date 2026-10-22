@@ -139,7 +139,7 @@ One message in a channel of its own that shows what steamidler is doing right no
 
 It updates every minute, and within about 5 seconds of `/add`, `/remove`, a disconnect or a resume. A restart keeps editing the same message; if you delete it, a new one appears within a minute. When steamidler stops, the box turns red.
 
-To turn it on, run `--setup-discord` again, pick a channel at **Live status channel** (an empty one, so notifications don't push the box out of view), then restart steamidler. The bot needs **Embed Links** in that channel: the invite link asks for it, and setup stops with a message if Discord hides the box. A bot invited before this feature needs Embed Links added to its role, or the new invite link opened again.
+To turn it on, run `--setup-discord` again, pick a channel at **Live status channel** (an empty one, so notifications don't push the box out of view), then restart steamidler. The bot needs **Embed Links** in that channel: the invite link asks for it, and setup stops with a message naming the fix if Discord refuses or hides the box. At runtime the same problem is logged once. A bot invited before this feature needs Embed Links added to its role, or the new invite link opened again.
 
 ### Messages
 

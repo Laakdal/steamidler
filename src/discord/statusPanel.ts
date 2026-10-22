@@ -5,7 +5,15 @@ import { editEmbedMessage, postEmbedMessage } from './rest.js';
 import { buildStatusEmbed, type Embed, type StatusSnapshot } from './statusEmbed.js';
 import { loadStatusMessage, saveStatusMessage, type StatusMessageRef } from './statusStore.js';
 
-export type PublishResult = { ok: true; messageId: string; embedShown: boolean } | { ok: false; status: number | undefined };
+// A failure carries Discord's numeric error code when the reply had one
+// (never the reply's text, which may echo request data)
+export type PublishResult =
+  | { ok: true; messageId: string; embedShown: boolean }
+  | { ok: false; status: number | undefined; code?: number };
+
+// Discord's "Cannot send an empty message": what an embed-only message can
+// become when the bot lacks Embed Links and Discord strips the embed
+const EMPTY_MESSAGE_CODE = 50006;
 
 export interface StatusPanelOptions {
   version: string;
@@ -15,19 +23,34 @@ export interface StatusPanelOptions {
   stopCapMs?: number;
 }
 
-// Owner-facing fixes, logged once each time the problem starts
-const PROBLEMS = {
+// Owner-facing fixes, logged once each time the problem starts; setup reuses them
+export const STATUS_BOX_PROBLEMS = {
   forbidden:
     'no permission to post in the status channel: give the bot View Channel, Send Messages and Embed Links there',
   notFound: 'status channel not found: run --setup-discord',
   hidden: 'Discord hid the status box: give the bot Embed Links in the status channel',
 };
-type Problem = keyof typeof PROBLEMS | 'error';
+type Problem = keyof typeof STATUS_BOX_PROBLEMS | 'rejected' | 'error';
+
+// True when Discord refused the box because it would have been empty
+export function isHiddenBox(result: PublishResult): boolean {
+  return result.ok ? !result.embedShown : result.code === EMPTY_MESSAGE_CODE;
+}
+
+// Pulls only the numeric error code out of a failed reply
+async function errorCode(res: Response): Promise<number | undefined> {
+  try {
+    const body = (await res.json()) as { code?: unknown };
+    return typeof body?.code === 'number' ? body.code : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // Reads the message Discord sent back. The id identifies the box from now on;
 // an empty embeds array means Discord dropped the box (no Embed Links).
 async function toResult(res: Response, knownId: string | null): Promise<PublishResult> {
-  if (!res.ok) return { ok: false, status: res.status };
+  if (!res.ok) return { ok: false, status: res.status, code: await errorCode(res) };
   let body: { id?: unknown; embeds?: unknown } = {};
   try {
     body = ((await res.json()) ?? {}) as { id?: unknown; embeds?: unknown };
@@ -40,8 +63,10 @@ async function toResult(res: Response, knownId: string | null): Promise<PublishR
 }
 
 // Edits the stored box when it belongs to this channel, and posts a new one
-// when there is none or Discord no longer has it. Shared with setup; never
-// throws, so callers only branch on the result.
+// when there is none, Discord no longer has it (404), or it is not this bot's
+// to edit (403, e.g. left by an earlier bot). A real permission problem still
+// shows, as the post then fails too. Shared with setup; never throws, so
+// callers only branch on the result.
 export async function publishStatus(
   token: string,
   channelId: string,
@@ -54,7 +79,7 @@ export async function publishStatus(
   try {
     if (stored && stored.channelId === channelId) {
       const res = await editEmbedMessage(token, channelId, stored.messageId, embed, timeoutMs, signal);
-      if (res.status !== 404) return await toResult(res, stored.messageId);
+      if (res.status !== 404 && res.status !== 403) return await toResult(res, stored.messageId);
     }
     return await toResult(await postEmbedMessage(token, channelId, embed, nonce, timeoutMs, signal), null);
   } catch {
@@ -208,7 +233,8 @@ export class StatusPanel {
   }
 
   // 401 ends the panel for this run (the notifier announces the bad token);
-  // 403/404 are logged once; 429, 5xx and network errors wait for the next tick.
+  // any other refusal is logged once, with the fix when one is known; 429, 5xx
+  // and network errors wait for the next tick.
   private handle(result: PublishResult): void {
     const channelId = this.bot.statusChannelId;
     if (result.ok) {
@@ -217,17 +243,22 @@ export class StatusPanel {
         saveStatusMessage(this.stored);
         this.nonce = null;
       }
-      this.report(result.embedShown ? null : 'hidden');
+      this.report(isHiddenBox(result) ? 'hidden' : null);
       return;
     }
-    if (result.status === 401) {
+    const status = result.status;
+    if (status === 401) {
       this.disabled = true;
       this.clearTimers();
       console.error('[discord] status box stopped: the bot token was rejected');
       return;
     }
-    if (result.status === 403) this.report('forbidden');
-    else if (result.status === 404) this.report('notFound');
+    if (isHiddenBox(result)) this.report('hidden');
+    else if (status === 403) this.report('forbidden');
+    else if (status === 404) this.report('notFound');
+    else if (status !== undefined && status >= 400 && status < 500 && status !== 429) {
+      this.report('rejected', `status box rejected by Discord: HTTP ${status}`);
+    }
   }
 
   // Logs a problem when it starts, not on every tick; clearing it lets the same
@@ -235,6 +266,6 @@ export class StatusPanel {
   private report(kind: Problem | null, text?: string): void {
     if (kind === this.problem) return;
     this.problem = kind;
-    if (kind) console.error(`[discord] ${text ?? PROBLEMS[kind as keyof typeof PROBLEMS]}`);
+    if (kind) console.error(`[discord] ${text ?? STATUS_BOX_PROBLEMS[kind as keyof typeof STATUS_BOX_PROBLEMS]}`);
   }
 }

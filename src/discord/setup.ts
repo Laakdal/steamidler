@@ -4,7 +4,7 @@ import { isBotTokenShape, loadDiscordConfig, parseWebhookUrl, saveDiscordConfig 
 import type { BotConfig } from './config.js';
 import { DiscordApiError, discordApi, postChannelMessage, postWebhook, registerCommands } from './rest.js';
 import { buildStatusEmbed } from './statusEmbed.js';
-import { publishStatus } from './statusPanel.js';
+import { STATUS_BOX_PROBLEMS, isHiddenBox, publishStatus } from './statusPanel.js';
 import { loadStatusMessage, saveStatusMessage, type StatusMessageRef } from './statusStore.js';
 
 const TEST_TIMEOUT_MS = 10_000;
@@ -87,12 +87,11 @@ async function placeStatusBox(bot: BotConfig, channelId: string, version: string
   const embed = buildStatusEmbed({ state: 'starting', waitingReason: null, games: [] }, new Date(), null, version);
   const nonce = `setup${Date.now().toString(36)}`;
   const result = await publishStatus(bot.token, channelId, loadStatusMessage(), embed, nonce, TEST_TIMEOUT_MS);
+  if (isHiddenBox(result)) throw new Error(`${STATUS_BOX_PROBLEMS.hidden}, then run --setup-discord again`);
   if (!result.ok) {
     if (result.status === undefined) throw new DiscordApiError(0, 'Could not reach Discord while showing the status box');
-    throw new DiscordApiError(result.status, `Discord rejected the status box: HTTP ${result.status}`);
-  }
-  if (!result.embedShown) {
-    throw new Error('Discord hid the status box: give the bot Embed Links in that channel, then run --setup-discord again');
+    const hint = result.status === 403 ? ` — ${STATUS_BOX_PROBLEMS.forbidden}` : '';
+    throw new DiscordApiError(result.status, `Discord rejected the status box: HTTP ${result.status}${hint}`);
   }
   return { channelId, messageId: result.messageId };
 }
