@@ -204,7 +204,7 @@
   - `gainedMs`: `accumulatedMs + (state idling && !isFrozen() ? now − startTime : 0)`.
   - `totalMinutes`: `initialPlaytime + floor(gainedMs / 60000)`.
   - `exempt`: `nextPauseAtMs === null`; `cooldownEndsAt`: `pauseUntil` for cooldown games.
-- `startIdling`, right after `startBot`: when `botConfig?.statusChannelId`, create the panel with `{ version: getVersion() }` and `start()`.
+- `startIdling`, right after `startBot`: when `botConfig?.statusChannelId`, create the panel with `{ version: packageVersion() }` and `start()`.
 - `renderStatus()` ends with `statusPanel?.nudge()`.
 - `handleShutdown` and `handleCrash`: `const panelStopped = statusPanel ? statusPanel.stop() : Promise.resolve();`, added to the existing `Promise.all([grace, finalMessage, panelStopped])`.
 
