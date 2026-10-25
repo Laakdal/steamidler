@@ -274,3 +274,24 @@ test('restoreIdling after shutdown logs out', async () => {
   assert.deepEqual(client.gamesPlayed, []);
   assert.ok(!discord.sent.some((m) => m.startsWith('▶️') || m.startsWith('🔄')), discord.sent.join('\n'));
 });
+
+test('a login failing after shutdown does not re-arm resume', async () => {
+  const failures = [Object.assign(new Error('RateLimitExceeded'), { eresult: 84 }), new Error('ETIMEDOUT')];
+  for (const failure of failures) {
+    const { rt, client, resume } = setup();
+    let fail;
+    client.loginImpl = () => new Promise((_, reject) => { fail = reject; });
+    client.isConnected = false;
+    resume.enterWaiting('disconnected (NoConnection, eresult 3)');
+    mock.timers.tick(60 * SEC);
+    await settle();
+    assert.equal(client.logins.length, 1);
+
+    // The user quits while the login is in flight, then it fails
+    rt.isShuttingDown = true;
+    rt.timers.clearAll();
+    fail(failure);
+    await settle();
+    assert.equal(rt.timers.has('resume'), false, failure.message);
+  }
+});

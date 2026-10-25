@@ -135,3 +135,20 @@ test('unprobeable app is skipped next time', async () => {
   assert.deepEqual(client.probes, [1, 2, 2]);
   assert.equal(client.relogs, 0);
 });
+
+test('a zombie check finishing after shutdown does not re-arm', async () => {
+  const { rt, client, flush } = setup();
+  let answer;
+  client.playtimeImpl = () => new Promise((resolve) => { answer = resolve; });
+  flush.start();
+  mock.timers.tick(90 * MIN);
+  await settle();
+  assert.deepEqual(client.probes, [1]);
+
+  // The user quits while the probe is in flight, then it answers
+  rt.isShuttingDown = true;
+  rt.timers.clearAll();
+  answer(100);
+  await settle();
+  assert.equal(rt.timers.has('zombie'), false);
+});

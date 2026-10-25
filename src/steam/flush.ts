@@ -191,10 +191,12 @@ export class Flush {
     this.forceRelog();
   }
 
-  // Runs the zombie check every ZOMBIE_CHECK_INTERVAL_MS, re-arming after each run
+  // Runs the zombie check every ZOMBIE_CHECK_INTERVAL_MS, re-arming after each
+  // run unless a shutdown cleared the timers while the probe was in flight
   private scheduleZombieCheck(): void {
     this.rt.timers.timeout('zombie', async () => {
       await this.runZombieCheck();
+      if (this.rt.isShuttingDown) return;
       this.scheduleZombieCheck();
     }, ZOMBIE_CHECK_INTERVAL_MS);
   }

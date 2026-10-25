@@ -215,6 +215,8 @@ export class Resume {
           rt.actions.shutdown(1);
           return;
         }
+        // A quit while the login was in flight already cleared every timer
+        if (rt.isShuttingDown) return;
         rt.timers.timeout(
           'resume',
           () => void this.attemptResume(),
@@ -234,6 +236,8 @@ export class Resume {
         rt.actions.shutdown(1);
         return;
       }
+      // Likewise: no retry into a shutdown
+      if (rt.isShuttingDown) return;
       rt.timers.timeout('resume', () => void this.attemptResume(), backoffMs(this.transientFailureCount, BACKOFF_CAP_MS));
     }
   }
