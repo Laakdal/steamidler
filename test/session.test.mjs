@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dist } from './helpers.mjs';
+import { dist, tempHome } from './helpers.mjs';
+
+// selection.js reaches the config dir; keep any write away from the real home
+tempHome();
 
 const { Session } = await import(dist('session.js'));
 const { createRuntime, isFrozen } = await import(dist('runtime.js'));
@@ -63,10 +66,60 @@ test('apply returns created appids', () => {
   assert.deepEqual(s.apply([sel(1), sel(3)], lib(1, 3)), []);
 });
 
-test('apply creates a game missing from the library with zero playtime', () => {
+test('apply puts a game missing from the library into missing, not idling', () => {
   const { s } = started([1]);
-  assert.deepEqual(s.apply([sel(1), sel(9)], lib(1)), [9]);
-  assert.equal(s.idling[1].initialPlaytime, 0);
+  assert.deepEqual(s.apply([sel(1), sel(9)], lib(1)), [], 'a missing game is not created');
+  assert.deepEqual(ids(s.idling), [1]);
+  assert.deepEqual(s.missing, [sel(9)]);
+});
+
+test('missing games survive apply and saves', () => {
+  const s = new Session(() => new Date(T0));
+  s.start([sel(1), sel(9), sel(2), sel(8)], lib(1, 2, 3), false);
+  assert.deepEqual(ids(s.idling), [1, 2]);
+  assert.deepEqual(s.missing, [sel(9), sel(8)], 'start keeps the saved names, in order');
+  // Any number of applies that keep them selected leaves them alone, with no duplicates
+  for (let i = 0; i < 3; i++) {
+    assert.deepEqual(s.apply(s.selection(), lib(1, 2, 3)), []);
+    assert.deepEqual(s.missing, [sel(9), sel(8)]);
+  }
+  s.apply([...s.selection(), sel(3)], lib(1, 2, 3));
+  assert.deepEqual(ids(s.idling), [1, 2, 3]);
+  assert.deepEqual(s.missing, [sel(9), sel(8)]);
+  assert.deepEqual(s.toSaved(), [sel(1), sel(2), sel(3), sel(9), sel(8)]);
+  // A fresh start from the saved form (the next run) still knows them
+  const next = new Session(() => new Date(T0));
+  next.start(s.toSaved(), lib(1, 2, 3), false);
+  assert.deepEqual(next.toSaved(), s.toSaved());
+  // Once a game is back in the library, the next start idles it
+  next.start(s.toSaved(), lib(1, 2, 3, 9), false);
+  assert.deepEqual(ids(next.idling), [1, 2, 3, 9]);
+  assert.deepEqual(next.missing, [sel(8)]);
+});
+
+test('toSaved includes paused and missing games', () => {
+  const s = new Session(() => new Date(T0));
+  s.start([sel(1), sel(2), sel(7), sel(3)], lib(1, 2, 3), false);
+  s.setBlocked(true, 2, both);
+  assert.deepEqual(ids(s.paused), [2]);
+  // idling, then paused, then missing; plain {appid, name} copies
+  assert.deepEqual(s.toSaved(), [sel(1), sel(3), sel(2), sel(7)]);
+  assert.deepEqual(s.selection(), s.toSaved());
+  const saved = s.toSaved();
+  saved[3].name = 'changed';
+  assert.equal(s.missing[0].name, 'g7', 'the saved form is a copy');
+  assert.ok(!('startTime' in saved[0]));
+});
+
+test('deselecting a missing game drops it', () => {
+  const s = new Session(() => new Date(T0));
+  s.start([sel(1), sel(7), sel(8)], lib(1), false);
+  s.apply([sel(1), sel(8)], lib(1));
+  assert.deepEqual(s.missing, [sel(8)]);
+  assert.deepEqual(s.toSaved(), [sel(1), sel(8)]);
+  s.apply([sel(1)], lib(1));
+  assert.deepEqual(s.missing, []);
+  assert.deepEqual(ids(s.idling), [1]);
 });
 
 test('apply leaves paused games paused', () => {
@@ -175,8 +228,11 @@ test('installSelection forgets the day-start of created games only', () => {
   rt.library = { games: [], byId: lib(1, 2, 3) };
   rt.session.start([sel(1), sel(2)], rt.library.byId, false);
   const forgotten = [];
+  let saves = 0;
+  rt.actions.saveSelection = () => { saves += 1; };
   installSelection(rt, (appids) => forgotten.push(...appids), [sel(2), sel(3)]);
   assert.deepEqual(forgotten, [3]);
+  assert.equal(saves, 1, 'every installed selection is saved');
   assert.deepEqual(ids(rt.session.idling), [2, 3]);
 });
 
@@ -194,7 +250,7 @@ test('isFrozen is true while waiting or blocked', () => {
 test('createRuntime starts with every guard off', () => {
   const rt = createRuntime({ client: {}, discord: {}, isHeadless: false });
   assert.equal(rt.idlingStartedAt, null);
-  for (const f of ['isIdling', 'isWaitingForResume', 'isInEditMode', 'isShuttingDown', 'stopNotified', 'selfInitiatedRelog']) {
+  for (const f of ['isIdling', 'isWaitingForResume', 'isInEditMode', 'isShuttingDown', 'stopNotified', 'selfInitiatedRelog', 'saveFailureNotified']) {
     assert.equal(rt[f], false, f);
   }
   assert.equal(rt.waitingReason, '');

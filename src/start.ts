@@ -319,8 +319,8 @@ export function startIdling(app: App, games: GameSelection[]): void {
   // Steam reports a block right after logon, before this handler existed.
   rt.session.start(games, rt.library.byId, rt.client.isPlayingBlocked);
 
-  const appIds = games.map((g) => g.appid);
-  rt.client.setGamesPlaying(appIds);
+  // Only library games: saved games missing from the library are never sent to Steam
+  rt.client.setGamesPlaying(rt.session.idling.map((g) => g.appid));
 
   setupKeyboardInput(rt, app.editMode);
 

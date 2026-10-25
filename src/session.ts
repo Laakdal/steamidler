@@ -1,11 +1,15 @@
 import type { IdlingGame, GameSelection, SteamGame } from './types/index.js';
 
 // The selected games and their playtime clocks. Each game is in exactly one of
-// idling (sent to Steam) or paused (being played elsewhere). No Steam or
-// Discord imports and an injectable clock, so it is testable offline.
+// idling (sent to Steam), paused (being played elsewhere) or missing (saved but
+// not in the library). No Steam or Discord imports and an injectable clock, so
+// it is testable offline.
 export class Session {
   private idlingGames: IdlingGame[] = [];
   private pausedGames: IdlingGame[] = [];
+  // Saved games not in the library (family sharing late or withdrawn): kept in
+  // the selection and the cap, never idled; retried at the next start.
+  private missingGames: GameSelection[] = [];
   // True while another session on this account is playing. Steam blocks this
   // session's gamesPlayed entirely, so local time accounting freezes for every
   // idling game, not just the one being played.
@@ -24,26 +28,42 @@ export class Session {
     return this.pausedGames;
   }
 
+  // Saved games that are not in the library; never sent to Steam or shown in the status table
+  get missing(): readonly GameSelection[] {
+    return this.missingGames;
+  }
+
   // Whether another session on the account is playing (was playingBlocked)
   get blocked(): boolean {
     return this.playingBlocked;
   }
 
-  // Converts both arrays back to the selector's form, idling then paused
+  // The whole selection in the selector's form, idling then paused then
+  // missing, so every 32-game cap check counts the missing games too.
   selection(): GameSelection[] {
-    return [...this.idlingGames, ...this.pausedGames].map((g) => ({
+    return [...this.idlingGames, ...this.pausedGames, ...this.missingGames].map((g) => ({
       appid: g.appid,
       name: g.name,
     }));
   }
 
-  // Initializes the session from the first selection. Steam reports a block
-  // right after logon, before the playingState handler exists, hence blocked.
+  // What the selection file stores: the same games, so paused and missing
+  // games survive a restart.
+  toSaved(): GameSelection[] {
+    return this.selection();
+  }
+
+  // Initializes the session from the first selection; games not in the
+  // library go to missing. Steam reports a block right after logon, before the
+  // playingState handler exists, hence blocked.
   start(selection: GameSelection[], library: Map<number, SteamGame>, blocked: boolean): void {
-    this.idlingGames = selection.map((game) => {
+    this.idlingGames = [];
+    this.missingGames = [];
+    for (const game of selection) {
       const steamGame = library.get(game.appid);
-      return this.createGame(game, steamGame);
-    });
+      if (steamGame) this.idlingGames.push(this.createGame(game, steamGame));
+      else this.missingGames.push({ appid: game.appid, name: game.name });
+    }
     this.pausedGames = [];
     this.playingBlocked = blocked;
   }
@@ -59,27 +79,35 @@ export class Session {
   }
 
   // Shared by the E key and the Discord commands so both apply a new selection
-  // identically; keeps kept games as the same objects. Returns the appids of
-  // the games it created, so the caller can reset their day-start.
+  // identically; keeps kept games as the same objects. A missing game that is
+  // still selected stays missing; a new one not in the library joins missing.
+  // Returns the appids of the idling games it created, so the caller can reset
+  // their day-start.
   apply(selection: GameSelection[], library: Map<number, SteamGame>): number[] {
-    const oldAppIds = new Set([...this.idlingGames, ...this.pausedGames].map((g) => g.appid));
+    const oldAppIds = new Set(this.selection().map((g) => g.appid));
     const newAppIds = new Set(selection.map((g) => g.appid));
 
     // Kept idling games keep their running clock: the selector time was idled
     // too. A block or disconnect that landed meanwhile already owns startTime.
     const keptIdlingGames = this.idlingGames.filter((g) => newAppIds.has(g.appid));
     const keptPausedGames = this.pausedGames.filter((g) => newAppIds.has(g.appid));
+    const keptMissingGames = this.missingGames.filter((g) => newAppIds.has(g.appid));
 
     const created: number[] = [];
     for (const game of selection) {
-      if (!oldAppIds.has(game.appid)) {
-        keptIdlingGames.push(this.createGame(game, library.get(game.appid)));
+      if (oldAppIds.has(game.appid)) continue;
+      const steamGame = library.get(game.appid);
+      if (steamGame) {
+        keptIdlingGames.push(this.createGame(game, steamGame));
         created.push(game.appid);
+      } else {
+        keptMissingGames.push({ appid: game.appid, name: game.name });
       }
     }
 
     this.idlingGames = keptIdlingGames;
     this.pausedGames = keptPausedGames;
+    this.missingGames = keptMissingGames;
     return created;
   }
 
@@ -137,13 +165,12 @@ export class Session {
     this.pausedGames = [];
   }
 
-  // Creates an IdlingGame from a selection; a game missing from the library starts at 0 minutes
-  private createGame(game: GameSelection, steamGame?: SteamGame): IdlingGame {
-    const initialPlaytime = steamGame?.playtime_forever ?? 0;
+  // Creates an IdlingGame from a selected library game, its total starting at Steam's playtime
+  private createGame(game: GameSelection, steamGame: SteamGame): IdlingGame {
     return {
       appid: game.appid,
       name: game.name,
-      initialPlaytime,
+      initialPlaytime: steamGame.playtime_forever,
       startTime: this.now(),
       accumulatedMs: 0,
     };

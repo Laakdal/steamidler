@@ -39,7 +39,7 @@ function setup({ idling = true } = {}) {
     rt.isIdling = true;
   }
   const handlers = createShutdown(rt);
-  rt.actions = { render: () => {}, shutdown: handlers.handleShutdown };
+  rt.actions = { render: () => {}, shutdown: handlers.handleShutdown, saveSelection: () => {} };
   return { rt, client, discord, exits, ...handlers };
 }
 

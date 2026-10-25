@@ -87,7 +87,7 @@ test('runAdd success calls add(appid)', () => {
   const p = fake({ library: bigLib(5), selection: [sel(1, 'Game 01')] });
   const r = m.runAdd(p, '2');
   assert.deepEqual(p.calls.add, [2]);
-  assert.equal(r, '▶️ Now idling Game 02 (until steamidler restarts).');
+  assert.equal(r, '▶️ Now idling Game 02.');
 });
 
 test('runRemove refuses the last game', () => {
@@ -104,11 +104,11 @@ test('runRemove unknown, not selected, busy', () => {
 
 test('runRemove success calls remove', () => {
   const p = fake({ selection: [sel(1, 'A'), sel(2, 'B')] });
-  assert.equal(m.runRemove(p, '2'), '⏹️ Stopped idling B (until steamidler restarts).');
+  assert.equal(m.runRemove(p, '2'), '⏹️ Stopped idling B.');
   assert.deepEqual(p.calls.remove, [2]);
 });
 
-test('formatStatus lists sections, waiting reason, and the restart note', () => {
+test('formatStatus lists sections, waiting reason, and the saved note', () => {
   const p = fake({
     waiting: 'Logged in elsewhere',
     selection: [
@@ -121,7 +121,7 @@ test('formatStatus lists sections, waiting reason, and the restart note', () => 
   assert.ok(s.includes('Idling (2)'));
   assert.ok(s.includes('Paused — playing elsewhere (1)'));
   assert.ok(s.includes('Steam: disconnected — Logged in elsewhere'));
-  assert.ok(s.endsWith('Changes made here last until steamidler restarts; favorites are unchanged.'));
+  assert.ok(s.endsWith('Changes are saved and kept after a restart.'));
   const q = m.formatStatus(fake({ selection: [sel(1, 'A')] }));
   assert.ok(!q.includes('Steam:'));
 });
@@ -133,4 +133,52 @@ test('status has no cooldown or exempt lines', () => {
 
 test('NOT_ALLOWED_REPLY', () => {
   assert.equal(m.NOT_ALLOWED_REPLY, "You're not allowed to control this steamidler.");
+});
+
+test('suggestRemove offers missing games, suggestAdd does not', () => {
+  const p = fake({ library: bigLib(3), selection: [sel(1, 'Game 01'), sel(90, 'Gone Game', { state: 'missing' })] });
+  assert.deepEqual(m.suggestRemove(p, 'gone'), [{ name: 'Gone Game', value: '90' }]);
+  assert.ok(!m.suggestAdd(p, '').some((c) => c.value === '90'));
+});
+
+test('status lists missing games under Not in library', () => {
+  const p = fake({
+    selection: [
+      sel(1, 'Alpha'),
+      sel(3, 'Gamma', { state: 'paused' }),
+      sel(90, 'Lent *Game*', { state: 'missing' }),
+      sel(91, 'Other', { state: 'missing' }),
+    ],
+  });
+  const s = m.formatStatus(p);
+  assert.ok(s.includes('Idling (1)\n• Alpha'));
+  assert.ok(s.includes('Paused — playing elsewhere (1)\n• Gamma'));
+  assert.ok(s.includes('Not in library — kept, retried at the next start (2)\n• Lent *Game*\n• Other'));
+  assert.ok(s.indexOf('Paused') < s.indexOf('Not in library'));
+  const none = m.formatStatus(fake({ selection: [sel(1, 'A')] }));
+  assert.ok(!none.includes('Not in library'));
+});
+
+test('status footer says changes are saved', () => {
+  const s = m.formatStatus(fake({ selection: [sel(1, 'A')] }));
+  assert.ok(s.endsWith('Changes are saved and kept after a restart.'));
+  assert.ok(!/restarts;|favorites/.test(s));
+});
+
+test('add and remove replies no longer say until restart', () => {
+  const p = fake({ library: bigLib(5), selection: [sel(1, 'Game 01'), sel(2, 'Game 02')] });
+  assert.equal(m.runAdd(p, '3'), '▶️ Now idling Game 03.');
+  assert.equal(m.runRemove(p, '2'), '⏹️ Stopped idling Game 02.');
+  assert.deepEqual(p.calls, { add: [3], remove: [2] });
+});
+
+test('removing the last game in the library is refused, a missing one is allowed', () => {
+  const p = fake({ selection: [sel(1, 'Only'), sel(90, 'Gone', { state: 'missing' })] });
+  assert.equal(m.runRemove(p, '1'), 'Only is the only game left — steamidler needs at least one.');
+  assert.deepEqual(p.calls.remove, []);
+  assert.equal(m.runRemove(p, '90'), '⏹️ Stopped idling Gone.');
+  assert.deepEqual(p.calls.remove, [90]);
+  // A paused library game counts as one that is left
+  const q = fake({ selection: [sel(1, 'A'), sel(2, 'B', { state: 'paused' }), sel(90, 'Gone', { state: 'missing' })] });
+  assert.equal(m.runRemove(q, '1'), '⏹️ Stopped idling A.');
 });

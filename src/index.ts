@@ -11,6 +11,7 @@ import { IS_HEADLESS } from './constants.js';
 import { StatusView } from './ui/statusView.js';
 import { createEditMode } from './ui/keyboard.js';
 import { createRuntime } from './runtime.js';
+import { saveCurrentSelection } from './selection.js';
 import { createShutdown, discordSecrets } from './shutdown.js';
 import { Flush } from './steam/flush.js';
 import { Resume } from './steam/resume.js';
@@ -29,8 +30,8 @@ const report = new DailyReport(rt);
 // Shutdown, crash and unhandled-rejection paths
 const shutdown = createShutdown(rt);
 const { handleShutdown, handleCrash, handleRejection } = shutdown;
-// Lets code outside this file repaint or shut down without importing it
-rt.actions = { render: () => view.render(), shutdown: handleShutdown };
+// Lets code outside this file repaint, shut down or save the selection without importing it
+rt.actions = { render: () => view.render(), shutdown: handleShutdown, saveSelection: () => saveCurrentSelection(rt) };
 // The 4-hour flush relog and the zombie watchdog
 const flush = new Flush(rt);
 // Waiting, getting back and the paused/resumed notices; startIdling registers its handlers

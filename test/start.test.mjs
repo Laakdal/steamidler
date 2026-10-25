@@ -22,6 +22,7 @@ const { Flush } = await import(dist('steam/flush.js'));
 const { Resume, RATE_LIMIT_MIN_WAIT_MS } = await import(dist('steam/resume.js'));
 const { createEditMode } = await import(dist('ui/keyboard.js'));
 const { createControlPanel } = await import(dist('discord/controlPanel.js'));
+const { saveCurrentSelection } = await import(dist('selection.js'));
 
 const T0 = Date.UTC(2026, 9, 25, 12);
 
@@ -78,7 +79,7 @@ function setup(over = {}) {
   const view = new StatusView(rt);
   const report = new DailyReport(rt);
   const shutdown = createShutdown(rt);
-  rt.actions = { render: () => view.render(), shutdown: shutdown.handleShutdown };
+  rt.actions = { render: () => view.render(), shutdown: shutdown.handleShutdown, saveSelection: () => saveCurrentSelection(rt) };
   const flush = new Flush(rt);
   const resume = new Resume(rt, flush, view);
   const editMode = createEditMode(rt, view, report);

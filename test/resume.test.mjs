@@ -44,7 +44,7 @@ function setup(games = [1, 2]) {
   const discord = createFakeNotifier();
   const exits = [];
   const rt = createRuntime({ client, discord, isHeadless: true });
-  rt.actions = { render: () => {}, shutdown: (code = 0) => exits.push(code) };
+  rt.actions = { render: () => {}, shutdown: (code = 0) => exits.push(code), saveSelection: () => {} };
   const byId = new Map(games.map((appid) => [appid, { appid, name: `g${appid}`, playtime_forever: 0, source: 'owned' }]));
   rt.library = { games: [...byId.values()], byId };
   rt.session.start(games.map((appid) => ({ appid, name: `g${appid}` })), byId, false);

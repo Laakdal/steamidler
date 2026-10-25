@@ -1,6 +1,7 @@
 import { MAX_IDLE_GAMES } from '../constants.js';
 
-export type SelectedState = 'idling' | 'paused';
+// 'missing': saved but not in the library; listed by /status and /remove only
+export type SelectedState = 'idling' | 'paused' | 'missing';
 export interface SelectedGameView {
   appid: number;
   name: string;
@@ -60,7 +61,7 @@ export function suggestAdd(panel: ControlPanel, query: string): Choice[] {
   return suggest(panel.library().filter((g) => !selected.has(g.appid)), query);
 }
 
-// Offers only the games currently being idled.
+// Offers the selected games, missing ones included, so /remove can drop those too.
 export function suggestRemove(panel: ControlPanel, query: string): Choice[] {
   return suggest(panel.selection(), query);
 }
@@ -83,10 +84,12 @@ export function runAdd(panel: ControlPanel, rawAppid: string): string {
   if (selection.some((g) => g.appid === appid)) return `Already idling ${game.name}.`;
   if (selection.length >= MAX_IDLE_GAMES) return `Already idling ${MAX_IDLE_GAMES} games — remove one first.`;
   panel.add(appid);
-  return `▶️ Now idling ${game.name} (until steamidler restarts).`;
+  return `▶️ Now idling ${game.name}.`;
 }
 
-// Validates and applies a /remove request, returning the reply text.
+// Validates and applies a /remove request, returning the reply text. The last
+// selected game in the library stays (steamidler needs one to idle); a missing
+// game can always go, since it is not being idled.
 export function runRemove(panel: ControlPanel, rawAppid: string): string {
   const busy = panel.busyReason();
   if (busy !== null) return busy;
@@ -97,9 +100,10 @@ export function runRemove(panel: ControlPanel, rawAppid: string): string {
     const inLibrary = appid !== null && panel.library().some((g) => g.appid === appid);
     return inLibrary ? `${panel.library().find((g) => g.appid === appid)!.name} isn't being idled.` : 'Unknown game.';
   }
-  if (selection.length <= 1) return `${game.name} is the only game left — steamidler needs at least one.`;
+  const inLibraryCount = selection.filter((g) => g.state !== 'missing').length;
+  if (game.state !== 'missing' && inLibraryCount <= 1) return `${game.name} is the only game left — steamidler needs at least one.`;
   panel.remove(appid);
-  return `⏹️ Stopped idling ${game.name} (until steamidler restarts).`;
+  return `⏹️ Stopped idling ${game.name}.`;
 }
 
 // Builds the plain-text /status reply; escaping is left to the send layer.
@@ -107,6 +111,7 @@ export function formatStatus(panel: ControlPanel): string {
   const sel = panel.selection();
   const idling = sel.filter((g) => g.state === 'idling');
   const paused = sel.filter((g) => g.state === 'paused');
+  const missing = sel.filter((g) => g.state === 'missing');
   const lines: string[] = [];
   const section = (title: string, rows: string[]) => {
     if (rows.length === 0) return;
@@ -114,8 +119,9 @@ export function formatStatus(panel: ControlPanel): string {
   };
   section('Idling', idling.map((g) => g.name));
   section('Paused — playing elsewhere', paused.map((g) => g.name));
+  section('Not in library — kept, retried at the next start', missing.map((g) => g.name));
   const waiting = panel.waitingReason();
   if (waiting !== null) lines.push(`Steam: disconnected — ${waiting}`, '');
-  lines.push('Changes made here last until steamidler restarts; favorites are unchanged.');
+  lines.push('Changes are saved and kept after a restart.');
   return lines.join('\n');
 }

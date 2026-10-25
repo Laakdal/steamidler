@@ -38,6 +38,8 @@ export type NotifierLike = Pick<DiscordNotifier, 'send' | 'botConfig' | 'isConfi
 export interface Actions {
   render(): void;
   shutdown(exitCode?: number): void;
+  // Writes the current selection to the selection file (saveCurrentSelection)
+  saveSelection(): void;
 }
 
 // The shared context: one object passed to every module, so no module keeps
@@ -68,6 +70,9 @@ export interface Runtime {
   // recovery). Suppresses the 🛑/▶️ Discord pair for the relog cycle; cleared in
   // restoreIdling once the session is back.
   selfInitiatedRelog: boolean;
+  // True once the save-failure notice went to Discord; a successful save clears
+  // it, so each streak of failed saves warns once.
+  saveFailureNotified: boolean;
   botHandle: BotHandle | null;
   // The live status box in Discord; created in startIdling when a status channel is set
   statusPanel: StatusPanel | null;
@@ -102,10 +107,11 @@ export function createRuntime(deps: {
     isShuttingDown: false,
     stopNotified: false,
     selfInitiatedRelog: false,
+    saveFailureNotified: false,
     botHandle: null,
     statusPanel: null,
     // Placeholders until the wiring replaces them
-    actions: { render: () => {}, shutdown: () => {} },
+    actions: { render: () => {}, shutdown: () => {}, saveSelection: () => {} },
   };
 }
 

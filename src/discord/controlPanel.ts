@@ -9,7 +9,8 @@ import type { GameSelection, IdlingGame } from '../types/index.js';
 
 // What the Discord status box shows, computed like the terminal table: no
 // live delta while frozen or for games that are not idling. Waiting wins over
-// blocked, since a disconnected session cannot be blocked meaningfully.
+// blocked, since a disconnected session cannot be blocked meaningfully. Saved
+// games missing from the library are not idled, so the box leaves them out.
 export function statusSnapshot(rt: Runtime): StatusSnapshot {
   const now = Date.now();
   const frozen = isFrozen(rt);
@@ -34,7 +35,8 @@ export function statusSnapshot(rt: Runtime): StatusSnapshot {
 
 // Builds what the Discord bot may see and do; startIdling hands it to the bot client.
 export function createControlPanel(rt: Runtime, report: DailyReport): ControlPanel {
-  // Applies a changed selection from the Discord commands exactly as edit mode does.
+  // Applies a changed selection from the Discord commands exactly as edit mode
+  // does, saving it on the way (installSelection).
   function applyRemoteSelection(newSelection: GameSelection[]): void {
     if (!rt.session.blocked) rt.session.bank();
     installSelection(rt, (appids) => report.forget(appids), newSelection);
@@ -61,9 +63,9 @@ export function createControlPanel(rt: Runtime, report: DailyReport): ControlPan
     library(): { appid: number; name: string }[] {
       return rt.library.games.map((g) => ({ appid: g.appid, name: g.name }));
     },
-    // Maps the two internal arrays to the read-only view the bot renders.
+    // Maps the session's idling, paused and missing games to the read-only view the bot renders.
     selection(): SelectedGameView[] {
-      const view = (g: IdlingGame, state: SelectedGameView['state']): SelectedGameView => ({
+      const view = (g: GameSelection, state: SelectedGameView['state']): SelectedGameView => ({
         appid: g.appid,
         name: g.name,
         state,
@@ -71,17 +73,19 @@ export function createControlPanel(rt: Runtime, report: DailyReport): ControlPan
       return [
         ...rt.session.idling.map((g) => view(g, 'idling')),
         ...rt.session.paused.map((g) => view(g, 'paused')),
+        ...rt.session.missing.map((g) => view(g, 'missing')),
       ];
     },
-    // Adds a library game to the live selection; unknown or already-selected ids,
-    // and anything past Steam's 32-game limit, are ignored.
+    // Adds a library game to the selection and saves it; unknown or already-selected
+    // ids, and anything past Steam's 32-game limit (missing games count), are ignored.
     add(appid: number): void {
       const game = rt.library.byId.get(appid);
       const current = rt.session.selection();
       if (!game || current.some((g) => g.appid === appid) || current.length >= MAX_IDLE_GAMES) return;
       applyRemoteSelection([...current, { appid, name: game.name }]);
     },
-    // Drops a game from the live selection; unselected ids are ignored.
+    // Drops a game from the selection and saves it; a missing game may go too.
+    // Unselected ids are ignored.
     remove(appid: number): void {
       const current = rt.session.selection();
       if (!current.some((g) => g.appid === appid)) return;
