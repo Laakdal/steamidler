@@ -12,7 +12,7 @@ import {
 import { promptAuthMethod } from './ui/prompts.js';
 import { selectGames } from './ui/gameSelector.js';
 import { showWelcome, showLoginSuccess, showLoginError, showError } from './ui/display.js';
-import { loadFavorites } from './storage/favorites.js';
+import { loadSelection } from './storage/selection.js';
 import type { DiscordNotifier } from './discord/notifier.js';
 import { runDiscordSetup } from './discord/setup.js';
 import { CONFIG_PATH as DISCORD_CONFIG_PATH, saveDiscordDisabled } from './discord/config.js';
@@ -21,7 +21,6 @@ import { StatusPanel } from './discord/statusPanel.js';
 import { statusSnapshot } from './discord/controlPanel.js';
 import type { ControlPanel } from './discord/commands.js';
 import type { DailyReport } from './notifications/dailyReport.js';
-import { MAX_IDLE_GAMES } from './constants.js';
 import { createSpinner } from './ui/spinner.js';
 import type { StatusView } from './ui/statusView.js';
 import { setupKeyboardInput } from './ui/keyboard.js';
@@ -107,7 +106,34 @@ async function failHeadless(rt: Runtime, message: string, exitCode: number): Pro
   throw new Error(`exit ${exitCode} returned`);
 }
 
-// Headless mode: auto-login and start idling favorites
+// The saved selection, or the favorites it migrates from, with library names
+// for the games found: a migration has only placeholders, and the library name
+// is the current one. Missing games keep their saved name for the log line.
+// null when there is none; an empty list counts as none.
+function loadStartSelection(rt: Runtime): { games: GameSelection[]; migrated: boolean } | null {
+  const loaded = loadSelection(rt.accountName);
+  if (!loaded || loaded.games.length === 0) return null;
+  const games = loaded.games.map((g) => {
+    const steamGame = rt.library.byId.get(g.appid);
+    return steamGame ? { appid: g.appid, name: steamGame.name } : g;
+  });
+  return { games, migrated: loaded.source === 'favorites' };
+}
+
+// Names the saved games not in the library at start: they stay in the
+// selection (family sharing late or withdrawn), so the owner should know why
+// they are not idling.
+function announceMissing(rt: Runtime, games: GameSelection[]): void {
+  const missing = games.filter((g) => !rt.library.byId.has(g.appid));
+  if (missing.length === 0) return;
+  console.log(
+    chalk.yellow(
+      `Saved but not in your library right now: ${missing.map((g) => g.name).join(', ')}; kept, retried at the next start.`
+    )
+  );
+}
+
+// Headless mode: auto-login and start idling the saved selection
 export async function runHeadless(app: App): Promise<void> {
   const { rt, client } = app;
   if (!hasStoredLogin()) {
@@ -150,45 +176,32 @@ export async function runHeadless(app: App): Promise<void> {
     await failHeadless(rt, (err as Error).message, HEADLESS_EXIT_TRANSIENT);
   }
 
-  const favoriteIds = loadFavorites(rt.accountName);
-  if (favoriteIds.length === 0) {
-    await failHeadless(
-      rt,
-      'No favorites configured. Run interactively first to set favorites.',
-      HEADLESS_EXIT_CONFIG
-    );
+  const saved = loadStartSelection(rt);
+  if (!saved) {
+    return failHeadless(rt, 'No games selected. Run steamidler interactively once to pick games.', HEADLESS_EXIT_CONFIG);
   }
 
-  const matchingGames: GameSelection[] = rt.library.games
-    .filter((g) => favoriteIds.includes(g.appid))
-    .map((g) => ({ appid: g.appid, name: g.name }));
-
-  if (matchingGames.length === 0) {
-    // Family-shared favorites are only visible once license data arrived; a
-    // slow PICS at boot must not look like a permanent config error.
+  const inLibrary = saved.games.filter((g) => rt.library.byId.has(g.appid));
+  if (inLibrary.length === 0) {
+    // Family-shared games are only visible once license data arrived; a slow
+    // PICS at boot must not look like a permanent config error. Either way the
+    // selection file is left as it is.
     if (!rt.client.ownershipCacheComplete) {
-      await failHeadless(
+      return failHeadless(
         rt,
         'No matching games found — library incomplete (license data timed out). Retrying.',
         HEADLESS_EXIT_TRANSIENT
       );
     }
-    await failHeadless(rt, 'No matching games found for your favorites.', HEADLESS_EXIT_CONFIG);
+    return failHeadless(rt, `None of your ${saved.games.length} saved games are in your library.`, HEADLESS_EXIT_CONFIG);
   }
+  announceMissing(rt, saved.games);
 
-  // A hand-edited or legacy favorites file may hold more than Steam allows;
-  // idle the first 32 instead of dying on the gamesPlayed cap.
-  const selectedGames = matchingGames.slice(0, MAX_IDLE_GAMES);
-  if (matchingGames.length > MAX_IDLE_GAMES) {
-    console.log(
-      chalk.yellow(
-        `${matchingGames.length} favorites exceed the ${MAX_IDLE_GAMES}-game limit — idling the first ${MAX_IDLE_GAMES}.`
-      )
-    );
-  }
-
-  console.log(`Starting ${selectedGames.length} favorite game(s)...`);
-  startIdling(app, selectedGames);
+  console.log(`Starting ${inLibrary.length} saved game(s)...`);
+  startIdling(app, saved.games);
+  // A migration writes the selection file at once, so the next start reads it
+  // instead of the favorites. A start from the saved file has nothing new to write.
+  if (saved.migrated) rt.actions.saveSelection();
 }
 
 // Interactive mode: full UI with prompts and game selector
@@ -228,6 +241,14 @@ export async function runInteractive(app: App): Promise<void> {
   }
   announceWebhookOnly(rt);
 
+  await pickAndStart(app);
+}
+
+// Fetches the library, opens the picker on the saved selection and starts
+// idling what it returns. Split from runInteractive so it runs offline without
+// a login.
+export async function pickAndStart(app: App): Promise<void> {
+  const { rt } = app;
   const spinner = createSpinner('Fetching your game library...').start();
   try {
     rt.library.games = await rt.client.getOwnedGames();
@@ -244,10 +265,9 @@ export async function runInteractive(app: App): Promise<void> {
     rt.exit(1);
   }
 
-  const { selectedGames, aborted } = await selectGames(
-    rt.library.games,
-    rt.accountName
-  );
+  // No saved selection (or an empty one) opens the picker with nothing ticked
+  const saved = loadStartSelection(rt);
+  const { selectedGames, aborted } = await selectGames(rt.library.games, saved?.games ?? [], false);
 
   if (aborted) {
     app.shutdown.handleShutdown(0);
@@ -261,6 +281,9 @@ export async function runInteractive(app: App): Promise<void> {
   }
 
   startIdling(app, selectedGames);
+  // Enter is a change of selection like any other: save it. This also
+  // completes a favorites migration, so the next start reads the selection file.
+  rt.actions.saveSelection();
 }
 
 // Handles authentication method selection and login

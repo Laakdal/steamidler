@@ -59,7 +59,8 @@ export function createEditMode(rt: Runtime, view: StatusView, report: DailyRepor
     console.clear();
 
     const currentSelection = rt.session.selection();
-    const { selectedGames: newSelection, aborted } = await selectGames(rt.library.games, rt.accountName, currentSelection);
+    // Missing games are in currentSelection, so the picker lists them and an apply keeps them
+    const { selectedGames: newSelection, aborted } = await selectGames(rt.library.games, currentSelection, true);
 
     // Ctrl+C inside the selector: the idling-screen key handler already started
     // the graceful shutdown; do not repaint over the goodbye message.

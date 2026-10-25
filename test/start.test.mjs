@@ -5,14 +5,17 @@ import path from 'node:path';
 import { dist, tempHome } from './helpers.mjs';
 import { createFakeClient } from './fake/steamClient.mjs';
 import { createFakeNotifier } from './fake/notifier.mjs';
+import { installFakeStdin, restoreStdin } from './fake/stdin.mjs';
+import { stripVTControlCharacters } from 'node:util';
 
-// credentials.js and favorites.js fix their paths at import time
+// credentials.js, favorites.js and selection.js fix their paths at import time
 const home = tempHome();
 const configDir = path.join(home, '.steam-idler');
 const credentialsFile = path.join(configDir, 'credentials.json');
 const favoritesFile = path.join(configDir, 'favorites-acct.json');
+const selectionFile = path.join(configDir, 'selection-acct.json');
 
-const { runHeadless, startIdling } = await import(dist('start.js'));
+const { runHeadless, startIdling, pickAndStart } = await import(dist('start.js'));
 const { parseArgs } = await import(dist('cli.js'));
 const { createRuntime } = await import(dist('runtime.js'));
 const { StatusView } = await import(dist('ui/statusView.js'));
@@ -47,7 +50,8 @@ let apps;
 
 beforeEach(() => {
   fs.writeFileSync(credentialsFile, JSON.stringify({ accountName: 'acct', refreshToken: TOKEN }));
-  fs.rmSync(favoritesFile, { force: true });
+  // Each test starts with only the login: no favorites, no selection, nothing set aside
+  for (const f of fs.readdirSync(configDir)) if (f !== 'credentials.json') fs.rmSync(path.join(configDir, f), { force: true });
   mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: T0 });
   // The spinner, status table and errors print; keep the test output clean
   mock.method(console, 'log', () => {});
@@ -63,14 +67,14 @@ afterEach(() => {
 });
 
 // The modules wired as index.ts wires them, on fakes. Exit records its code and throws.
-function setup(over = {}) {
+function setup(over = {}, { headless = true } = {}) {
   const client = createFakeClient(over);
   const discord = createFakeNotifier();
   const exits = [];
   const rt = createRuntime({
     client,
     discord,
-    isHeadless: true,
+    isHeadless: headless,
     exit: (code) => {
       exits.push(code);
       throw new ExitCalled(code);
@@ -167,22 +171,130 @@ test('headless rate-limited login waits instead of exiting', async () => {
   assert.deepEqual(discord.sent.slice(1), ['▶️ Idling started — 1 games']);
 });
 
-test('headless with no favorites exits 2', async () => {
+// Writes the selection file as saveSelection would
+const writeSelection = (games) =>
+  fs.writeFileSync(selectionFile, JSON.stringify({ version: 1, savedAt: new Date(T0).toISOString(), games }));
+const readSelection = () => JSON.parse(fs.readFileSync(selectionFile, 'utf8')).games;
+// Every console.log line so far, colours stripped
+const logged = () => console.log.mock.calls.map((c) => stripVTControlCharacters(c.arguments.join(' ')));
+
+test('headless with no selection exits 2 with the exact message', async () => {
   const { exits, sent } = await failedStart({ getOwnedGames: async () => [game(10)] });
   assert.deepEqual(exits, [2]);
-  assert.deepEqual(sent, ['🛑 Headless start failed — No favorites configured. Run interactively first to set favorites.']);
+  assert.deepEqual(sent, ['🛑 Headless start failed — No games selected. Run steamidler interactively once to pick games.']);
+  assert.equal(fs.existsSync(selectionFile), false);
 });
 
-test('headless with incomplete license data and no match exits 1', async () => {
-  fs.writeFileSync(favoritesFile, JSON.stringify({ favorites: [99] }));
-  const { exits, sent } = await failedStart({
-    getOwnedGames: async () => [game(10)],
-    ownershipCacheComplete: false,
-  });
-  assert.deepEqual(exits, [1]);
-  assert.deepEqual(sent, [
+test('headless with an empty saved selection exits 2', async () => {
+  writeSelection([]);
+  const saved = fs.readFileSync(selectionFile, 'utf8');
+  const empty = await failedStart({ getOwnedGames: async () => [game(10)] });
+  assert.deepEqual(empty.exits, [2]);
+  assert.deepEqual(empty.sent, ['🛑 Headless start failed — No games selected. Run steamidler interactively once to pick games.']);
+  assert.equal(fs.readFileSync(selectionFile, 'utf8'), saved);
+
+  // A favorites file with no valid id counts as no selection too
+  fs.rmSync(selectionFile);
+  fs.writeFileSync(favoritesFile, JSON.stringify({ favorites: [0, 'x'] }));
+  const noIds = await failedStart({ getOwnedGames: async () => [game(10)] });
+  assert.deepEqual(noIds.exits, [2]);
+  assert.equal(fs.existsSync(selectionFile), false);
+});
+
+test('migrates favorites once and writes the selection file', async () => {
+  fs.writeFileSync(favoritesFile, JSON.stringify({ favorites: [10, 99], exemptAppId: 10 }));
+  const first = setup({ getOwnedGames: async () => [game(10), game(20)] });
+  await runHeadless(first.app);
+  assert.deepEqual(first.exits, []);
+  assert.deepEqual(first.client.gamesPlayed, [[10]]);
+  // Library names replace the migration's placeholders; the missing game is kept
+  assert.deepEqual(first.rt.session.idling.map((g) => g.name), ['g10']);
+  assert.deepEqual(readSelection(), [
+    { appid: 10, name: 'g10' },
+    { appid: 99, name: 'App 99' },
+  ]);
+  // The old file is left on disk as it was
+  assert.deepEqual(JSON.parse(fs.readFileSync(favoritesFile, 'utf8')), { favorites: [10, 99], exemptAppId: 10 });
+
+  // The next start reads the selection file, not the favorites
+  fs.writeFileSync(favoritesFile, JSON.stringify({ favorites: [20] }));
+  const savedAt = JSON.parse(fs.readFileSync(selectionFile, 'utf8')).savedAt;
+  mock.timers.tick(60_000);
+  const second = setup({ getOwnedGames: async () => [game(10), game(20)] });
+  await runHeadless(second.app);
+  assert.deepEqual(second.client.gamesPlayed, [[10]]);
+  // A start from the saved file does not rewrite it
+  assert.equal(JSON.parse(fs.readFileSync(selectionFile, 'utf8')).savedAt, savedAt);
+});
+
+test('missing games are kept when some match', async () => {
+  writeSelection([
+    { appid: 10, name: 'Ten' },
+    { appid: 98, name: 'Lent Game' },
+    { appid: 99, name: 'Gone Game' },
+  ]);
+  const before = fs.readFileSync(selectionFile, 'utf8');
+  const { app, rt, client, discord, exits } = setup({ getOwnedGames: async () => [game(10), game(20)] });
+  await runHeadless(app);
+  assert.deepEqual(exits, []);
+  assert.deepEqual(client.gamesPlayed, [[10]]);
+  assert.deepEqual(rt.session.missing, [
+    { appid: 98, name: 'Lent Game' },
+    { appid: 99, name: 'Gone Game' },
+  ]);
+  assert.ok(logged().includes('Saved but not in your library right now: Lent Game, Gone Game; kept, retried at the next start.'));
+  assert.deepEqual(discord.sent, ['▶️ Idling started — 1 games']);
+  assert.equal(fs.readFileSync(selectionFile, 'utf8'), before);
+});
+
+test('no saved game in the library: exit 2 with complete license data, exit 1 without', async () => {
+  writeSelection([
+    { appid: 98, name: 'Lent Game' },
+    { appid: 99, name: 'Gone Game' },
+  ]);
+  const before = fs.readFileSync(selectionFile, 'utf8');
+  const complete = await failedStart({ getOwnedGames: async () => [game(10)] });
+  assert.deepEqual(complete.exits, [2]);
+  assert.deepEqual(complete.sent, ['🛑 Headless start failed — None of your 2 saved games are in your library.']);
+  assert.equal(fs.readFileSync(selectionFile, 'utf8'), before);
+
+  const incomplete = await failedStart({ getOwnedGames: async () => [game(10)], ownershipCacheComplete: false });
+  assert.deepEqual(incomplete.exits, [1]);
+  assert.deepEqual(incomplete.sent, [
     '🛑 Headless start failed — No matching games found — library incomplete (license data timed out). Retrying.',
   ]);
+  assert.equal(fs.readFileSync(selectionFile, 'utf8'), before);
+});
+
+test('interactive start saves what the picker returns', async () => {
+  writeSelection([
+    { appid: 10, name: 'Ten' },
+    { appid: 99, name: 'Gone Game' },
+  ]);
+  const stdin = installFakeStdin();
+  mock.method(console, 'clear', () => {});
+  try {
+    const { app, rt, client, exits } = setup({ getOwnedGames: async () => [game(10), game(20), game(30)] }, { headless: false });
+    rt.accountName = 'acct'; // set by the login runInteractive does first
+    const run = pickAndStart(app);
+    for (let i = 0; i < 20 && stdin.listenerCount('keypress') === 0; i++) await settle();
+    assert.equal(stdin.listenerCount('keypress'), 1);
+    // Rows: g10, Gone Game (Selected), then g20, g30. Tick g20 and start.
+    stdin.press('down');
+    stdin.press('down');
+    stdin.press('space');
+    stdin.press('return');
+    await run;
+    assert.deepEqual(exits, []);
+    assert.deepEqual(client.gamesPlayed, [[10, 20]]);
+    assert.deepEqual(readSelection(), [
+      { appid: 10, name: 'g10' },
+      { appid: 20, name: 'g20' },
+      { appid: 99, name: 'Gone Game' },
+    ]);
+  } finally {
+    restoreStdin();
+  }
 });
 
 test('startIdling sends Idling started and enters waiting when the client is already disconnected', () => {

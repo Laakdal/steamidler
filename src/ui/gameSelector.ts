@@ -1,7 +1,6 @@
 import * as readline from 'node:readline';
 import chalk from 'chalk';
 import type { SteamGame, GameSelection, GameSource, GameSelectorResult } from '../types/index.js';
-import { loadFavorites, saveFavorites } from '../storage/favorites.js';
 import { MAX_IDLE_GAMES } from '../constants.js';
 
 interface SelectableGame {
@@ -9,8 +8,12 @@ interface SelectableGame {
   name: string;
   playtime: number;
   selected: boolean;
-  isFavorite: boolean;
-  source: GameSource;
+  // Selected when the picker opened: listed first, under the Selected header.
+  // Fixed while the picker is open, so ticking never moves a row.
+  inSelectedGroup: boolean;
+  // Saved but not in the library (null source): shown so it can be unticked,
+  // otherwise an edit-mode apply would drop it from the saved selection.
+  source: GameSource | null;
 }
 
 type SourceFilter = 'all' | 'owned' | 'free' | 'shared';
@@ -30,44 +33,48 @@ const FILTER_LABEL: Record<SourceFilter, string> = {
   shared: 'family shared',
 };
 
-// Interactive game selection with keyboard navigation and favorites support
+// Interactive game selection with keyboard navigation. `selected` is the saved
+// selection at start, or what is idling in edit mode; its games open ticked
+// and listed first, including saved games missing from the library.
 export async function selectGames(
   games: SteamGame[],
-  accountName: string,
-  currentSelection: GameSelection[] = []
+  selected: GameSelection[],
+  isEditMode: boolean
 ): Promise<GameSelectorResult> {
-  const favorites = loadFavorites(accountName);
-  const currentAppIds = new Set(currentSelection.map((g) => g.appid));
-  // Edit mode (a current selection exists) must reflect exactly what is idling;
-  // re-adding favorites would silently undo a deliberate deselection.
-  const isEditMode = currentSelection.length > 0;
+  // A hand-edited file could repeat a game or exceed the cap; keep the first
+  // MAX_IDLE_GAMES unique ones so Enter never trips the gamesPlayed cap.
+  const preselected = new Set<number>();
+  for (const game of selected) {
+    if (preselected.size >= MAX_IDLE_GAMES) break;
+    preselected.add(game.appid);
+  }
 
-  // Create selectable games list
-  const selectableGames: SelectableGame[] = games.map((game) => ({
+  const libraryIds = new Set(games.map((g) => g.appid));
+  const byName = (a: SelectableGame, b: SelectableGame): number => a.name.localeCompare(b.name);
+
+  const libraryRows: SelectableGame[] = games.map((game) => ({
     appid: game.appid,
     name: game.name,
     playtime: game.playtime_forever,
-    selected: isEditMode ? currentAppIds.has(game.appid) : favorites.includes(game.appid),
-    isFavorite: favorites.includes(game.appid),
+    selected: preselected.has(game.appid),
+    inSelectedGroup: preselected.has(game.appid),
     source: game.source,
   }));
-
-  // Sort: favorites first (alphabetically), then non-favorites (alphabetically)
-  selectableGames.sort((a, b) => {
-    if (a.isFavorite && !b.isFavorite) return -1;
-    if (!a.isFavorite && b.isFavorite) return 1;
-    return a.name.localeCompare(b.name);
-  });
-
-  // The preselection (current selection ∪ favorites) can exceed the cap when a
-  // favorites file was hand-edited or predates the limit; keep the first 32 so
-  // Enter never trips the gamesPlayed cap.
-  let preselected = 0;
-  for (const game of selectableGames) {
-    if (!game.selected) continue;
-    if (preselected >= MAX_IDLE_GAMES) game.selected = false;
-    else preselected++;
+  const seenMissing = new Set<number>();
+  const missingRows: SelectableGame[] = [];
+  for (const game of selected) {
+    if (!preselected.has(game.appid) || libraryIds.has(game.appid) || seenMissing.has(game.appid)) continue;
+    seenMissing.add(game.appid);
+    missingRows.push({ appid: game.appid, name: game.name, playtime: 0, selected: true, inSelectedGroup: true, source: null });
   }
+
+  // Order fixed at open: the Selected group (library games, then the missing
+  // ones), then the rest of the library, each alphabetically.
+  const selectableGames: SelectableGame[] = [
+    ...libraryRows.filter((g) => g.inSelectedGroup).sort(byName),
+    ...missingRows.sort(byName),
+    ...libraryRows.filter((g) => !g.inSelectedGroup).sort(byName),
+  ];
 
   return new Promise((resolve) => {
     let cursorIndex = 0;
@@ -85,18 +92,16 @@ export async function selectGames(
       searchQuery.length === 0 ||
       g.name.toLowerCase().includes(searchQuery.toLowerCase());
 
+    // A missing game has no source, so only the "all" filter shows it
     const matchesFilter = (g: SelectableGame): boolean =>
       (sourceFilter === 'all' || g.source === sourceFilter) && matchesQuery(g);
 
-    const getVisibleGames = (): SelectableGame[] => {
-      const favoriteGames = selectableGames.filter((g) => g.isFavorite && matchesFilter(g));
-      const nonFavoriteGames = selectableGames.filter((g) => !g.isFavorite && matchesFilter(g));
-      return [...favoriteGames, ...nonFavoriteGames];
-    };
+    // The rows on screen, in the fixed order
+    const getVisibleGames = (): SelectableGame[] => selectableGames.filter(matchesFilter);
 
     const sourceCounts = (): Record<GameSource, number> => {
       const counts: Record<GameSource, number> = { owned: 0, free: 0, shared: 0 };
-      for (const g of selectableGames) counts[g.source]++;
+      for (const g of selectableGames) if (g.source) counts[g.source]++;
       return counts;
     };
 
@@ -104,16 +109,16 @@ export async function selectGames(
       console.clear();
 
       const filteredGames = getVisibleGames();
-      const favoriteCount = filteredGames.filter((g) => g.isFavorite).length;
+      const groupCount = filteredGames.filter((g) => g.inSelectedGroup).length;
 
       console.log(chalk.cyan.bold('\n  Select Games to Idle\n'));
 
-      // Count selections + source breakdown
+      // Count selections (missing games included: they hold a slot) + source breakdown
       const selectedCount = selectableGames.filter((g) => g.selected).length;
       const counts = sourceCounts();
       console.log(
         chalk.gray(
-          `  Selected: ${selectedCount}/${MAX_IDLE_GAMES} | Favorites: ${favoriteCount} | ` +
+          `  Selected: ${selectedCount}/${MAX_IDLE_GAMES} | ` +
             `Owned: ${counts.owned} ${chalk.green('$')} ${counts.free} ${chalk.magenta('↪')} ${counts.shared}`
         )
       );
@@ -130,29 +135,26 @@ export async function selectGames(
       const visibleEnd = Math.min(scrollOffset + pageSize, filteredGames.length);
       const visibleGames = filteredGames.slice(visibleStart, visibleEnd);
 
-      const favoritesEndIndex = favoriteCount;
-
-      // Render favorites header if there are favorites and we're showing some
-      if (favoriteCount > 0 && scrollOffset < favoritesEndIndex) {
-        console.log(chalk.yellow.bold('  ★ FAVORITES\n'));
+      // Render the Selected header if the group has rows and some are on screen
+      if (groupCount > 0 && scrollOffset < groupCount) {
+        console.log(chalk.green.bold('  SELECTED\n'));
       }
 
       let displayIndex = visibleStart;
       for (const game of visibleGames) {
-        if (displayIndex === favoritesEndIndex && favoriteCount > 0) {
+        if (displayIndex === groupCount && groupCount > 0) {
           console.log('');
           console.log(chalk.gray.bold('  ALL GAMES\n'));
         }
 
         const isCurrent = displayIndex === cursorIndex;
         const checkbox = game.selected ? chalk.green('[✓]') : chalk.gray('[ ]');
-        const star = game.isFavorite ? chalk.yellow('★ ') : '  ';
-        const badge = SOURCE_BADGE[game.source];
-        const playtime = formatPlaytime(game.playtime);
+        const badge = game.source ? SOURCE_BADGE[game.source] : '  ';
+        const detail = game.source ? chalk.gray(`(${formatPlaytime(game.playtime)})`) : chalk.yellow('(not in library)');
         const name =
           game.name.length > 40 ? game.name.substring(0, 37) + '...' : game.name;
 
-        const line = `  ${checkbox} ${star}${badge}${name} ${chalk.gray(`(${playtime})`)}`;
+        const line = `  ${checkbox} ${badge}${name} ${detail}`;
 
         if (isCurrent) {
           console.log(chalk.bgGray.white(line));
@@ -178,14 +180,8 @@ export async function selectGames(
       if (isSearchMode) {
         console.log(chalk.gray('  Type to filter | Backspace: delete | Esc: cancel | Enter: confirm'));
       } else {
-        console.log(chalk.gray('  ↑/↓ PgUp/PgDn Home/End: Navigate | Space: Toggle | F: Favorite | T: Filter | /: Search'));
-        console.log(
-          chalk.gray(
-            isEditMode
-              ? '  Enter: Apply | S: Idle all favorites | Esc: Back (keep selection; F/X already saved)'
-              : '  Enter: Start | S: Start all favorites'
-          )
-        );
+        console.log(chalk.gray('  ↑/↓ PgUp/PgDn Home/End: Navigate | Space: Toggle | T: Filter | /: Search'));
+        console.log(chalk.gray(isEditMode ? '  Enter: Apply | Esc: Back (keep selection)' : '  Enter: Start'));
       }
       console.log('');
     };
@@ -286,7 +282,7 @@ export async function selectGames(
         // Edit mode: leave the selection exactly as it is idling now
         if (isEditMode) {
           cleanup();
-          resolve({ selectedGames: currentSelection });
+          resolve({ selectedGames: selected });
         }
         return;
       }
@@ -301,45 +297,6 @@ export async function selectGames(
             return;
           }
           game.selected = !game.selected;
-        }
-        render();
-        return;
-      }
-
-      if (str === 'f' || str === 'F') {
-        const game = allGames[cursorIndex];
-        if (game) {
-          const favoriteTotal = selectableGames.filter((g) => g.isFavorite).length;
-          if (!game.isFavorite && favoriteTotal >= MAX_IDLE_GAMES) {
-            hint = `Favorites are capped at ${MAX_IDLE_GAMES} (headless idles all of them)`;
-            render();
-            return;
-          }
-          game.isFavorite = !game.isFavorite;
-
-          // Update favorites in storage
-          const newFavorites = selectableGames
-            .filter((g) => g.isFavorite)
-            .map((g) => g.appid);
-          if (!saveFavorites(accountName, newFavorites)) {
-            hint = 'Could not save favorites — is ~/.steam-idler writable?';
-          }
-
-          selectableGames.sort((a, b) => {
-            if (a.isFavorite && !b.isFavorite) return -1;
-            if (!a.isFavorite && b.isFavorite) return 1;
-            return a.name.localeCompare(b.name);
-          });
-
-          const visible = getVisibleGames();
-          const newIndex = visible.findIndex((g) => g.appid === game.appid);
-          cursorIndex = newIndex >= 0 ? newIndex : 0;
-
-          if (cursorIndex < scrollOffset) {
-            scrollOffset = cursorIndex;
-          } else if (cursorIndex >= scrollOffset + pageSize) {
-            scrollOffset = cursorIndex - pageSize + 1;
-          }
         }
         render();
         return;
@@ -364,32 +321,21 @@ export async function selectGames(
         return;
       }
 
-      if (str === 's' || str === 'S') {
-        const selectedGames = selectableGames
-          .filter((g) => g.isFavorite)
-          .slice(0, MAX_IDLE_GAMES)
-          .map((g) => ({ appid: g.appid, name: g.name }));
-        if (selectedGames.length === 0) {
-          hint = 'No favorites yet — press F on a game first';
-          render();
-          return;
-        }
-        cleanup();
-        resolve({ selectedGames });
-        return;
-      }
-
       if (key.name === 'return') {
-        const selectedGames = selectableGames
-          .filter((g) => g.selected)
-          .map((g) => ({ appid: g.appid, name: g.name }));
-        if (selectedGames.length === 0) {
-          hint = 'Nothing selected — Space toggles a game, S starts your favorites';
+        const ticked = selectableGames.filter((g) => g.selected);
+        if (ticked.length === 0) {
+          hint = 'Nothing selected — Space toggles a game';
+          render();
+          return;
+        }
+        // Missing games are never sent to Steam, so they alone would idle nothing
+        if (!ticked.some((g) => g.source !== null)) {
+          hint = 'Pick at least one game from your library';
           render();
           return;
         }
         cleanup();
-        resolve({ selectedGames });
+        resolve({ selectedGames: ticked.map((g) => ({ appid: g.appid, name: g.name })) });
         return;
       }
     };

@@ -159,8 +159,8 @@ export async function loginWithCredentials(client: SteamClient): Promise<LoginRe
       // right away so nothing can be submitted into a finished session.
       promptAbort.abort();
       const refreshToken = session.refreshToken;
-      // Steam's canonical account name keys the favorites file; the typed one
-      // may differ in case and would split favorites across two files.
+      // Steam's canonical account name keys the selection file; the typed one
+      // may differ in case and would split the selection across two files.
       const accountName = session.accountName || typedAccountName;
 
       if (!refreshToken) {

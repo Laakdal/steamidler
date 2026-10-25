@@ -30,13 +30,13 @@ function showHelp(): void {
 
 Usage:
   steamidler                   Interactive mode (login, pick games, idle)
-  steamidler --headless        Headless mode: auto-login and idle your favorites
+  steamidler --headless        Headless mode: auto-login and idle your saved selection
   steamidler --setup-discord   (Re)configure the Discord bot and backup webhook
   steamidler --logout          Forget the saved Steam login
   steamidler --version, -v     Print version
   steamidler --help, -h        Show this help
 
-Config lives in ~/.steam-idler/ (credentials, favorites, discord).`);
+Config lives in ~/.steam-idler/ (credentials, selection, discord).`);
 }
 
 // Main entry point that orchestrates the application flow
