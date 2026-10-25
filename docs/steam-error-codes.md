@@ -10,7 +10,7 @@ Three routes, and only two of them can be caught.
 
 **The `error` event.** Every other logoff EResult counts as fatal and arrives here, with the code on `err.eresult` and its name as the message. An `error` event with no listener throws and kills the process, so `SteamClient` attaches one in its constructor, before anything else can happen.
 
-**Throws nothing can catch.** Calling `logOn()` while steam-user already holds a session, or while a logon of its own is still running, throws ("Already logged on", "Already attempting to log on") from inside `process.nextTick`. No try/catch reaches that; the process dies (node-steam-user issue #481). Every logon path in steamidler checks `isConnected`, `isConnecting` (steam-user's private `_connecting` flag) and `isReconnecting` first. This came up in practice: upstream commit `63357cf` fixed a crash after long idling.
+**Throws nothing can catch.** Calling `logOn()` while steam-user already holds a session, or while a logon of its own is still running, throws ("Already logged on", "Already attempting to log on") from inside `process.nextTick`. No try/catch reaches that; the process dies (node-steam-user issue #481). So `SteamClient.loginWithRefreshToken` refuses while `isConnected` or `isConnecting` (steam-user's private `_connecting` flag) is true, and the resume path also waits while `isReconnecting` says steam-user is retrying by itself. The original steamidled hit this crash in practice after long idling, and fixed it in its commit "fix: random steam logon error after long continious idling".
 
 ## What steamidler does
 

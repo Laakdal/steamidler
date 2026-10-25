@@ -8,7 +8,8 @@ import { dist, tempHome } from './helpers.mjs';
 const home = tempHome();
 const file = path.join(home, '.steam-idler', 'credentials.json');
 
-const { loginWithStoredCredentials, hasStoredLogin } = await import(dist('steam/auth.js'));
+const { loginWithStoredCredentials, loginWithQR, hasStoredLogin } = await import(dist('steam/auth.js'));
+const { LoginSession } = await import('steam-session');
 const { saveCredentials } = await import(dist('storage/credentials.js'));
 
 // Builds a token shaped like a Steam refresh token at run time
@@ -74,3 +75,20 @@ for (const [label, error] of [
     assert.equal(fs.existsSync(file), true);
   });
 }
+
+test('a throw while showing the QR code ends the login with a failure instead of escaping', async () => {
+  LoginSession.qrStart = async () => ({
+    get qrChallengeUrl() {
+      throw new Error('terminal broke');
+    },
+  });
+  try {
+    const outcome = await Promise.race([
+      loginWithQR(fakeClient()),
+      new Promise((r) => setTimeout(() => r('never settled'), 2000)),
+    ]);
+    assert.deepEqual(outcome, { success: false, error: 'terminal broke' });
+  } finally {
+    LoginSession.qrStart = null;
+  }
+});

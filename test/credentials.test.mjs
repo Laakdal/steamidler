@@ -98,3 +98,15 @@ test('the atomic writer cleans up its temp file when the rename fails', () => {
   assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes('.tmp')), []);
   fs.rmSync(target, { recursive: true, force: true });
 });
+
+test('the atomic writer reports the write error even when its cleanup fails too', () => {
+  const target = path.join(dir, 'busy.json');
+  // A non-empty folder where the temp file goes: the write fails, and removing it fails as well
+  const temp = `${target}.tmp-${process.pid}`;
+  fs.mkdirSync(path.join(temp, 'inner'), { recursive: true });
+  try {
+    assert.throws(() => writeFileAtomic(target, 'x'), (err) => err.syscall === 'open');
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});

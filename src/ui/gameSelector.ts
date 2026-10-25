@@ -89,6 +89,7 @@ class Picker {
   // gets the rest, so a plain 24-line terminal still shows the counters.
   readonly pageSize = Math.min(30, Math.max(5, (process.stdout.rows || 24) - 20));
 
+  // openedWith is what Esc returns in edit mode
   constructor(readonly rows: Row[], readonly isEditMode: boolean, readonly openedWith: GameSelection[]) {}
 
   // The rows passing the filter and the search. A missing game has no
@@ -100,6 +101,7 @@ class Picker {
     );
   }
 
+  // Ticked rows, missing games included: each holds a slot under the cap
   tickedCount(): number {
     return this.rows.filter((r) => r.ticked).length;
   }

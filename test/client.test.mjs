@@ -65,6 +65,15 @@ test('a logon rejects with the steam-user error', async () => {
   await assert.rejects(p, /Expired/);
 });
 
+test('an error event without an error object still fails the logon', async () => {
+  const client = new SteamClient();
+  client.onError(() => {});
+  const p = client.loginWithRefreshToken('tok', 'alice');
+  client.steamUser.emit('error', undefined);
+  await assert.rejects(p);
+  assert.equal(client.accountName, null);
+});
+
 test('a logon steam-user abandons times out after two minutes and tears the attempt down', async () => {
   mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   try {

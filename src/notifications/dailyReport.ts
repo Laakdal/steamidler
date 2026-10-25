@@ -23,6 +23,7 @@ export class DailyReport {
   // Idle time per appid when the day started
   private atDayStart = new Map<number, number>();
 
+  // Takes the shared runtime the games are read from
   constructor(private readonly rt: Runtime) {}
 
   // Called once by startIdling: today's snapshot, then the first midnight

@@ -8,7 +8,7 @@ When a doc disagrees with the code, trust the code, and fix the doc in the same 
 
 `steamidler` is a Node.js CLI and daemon that idles up to 32 Steam games at once to accumulate playtime. It runs interactively (keyboard UI with a game selector) or headless (`--headless`, resumes the saved selection, runs under systemd). The deployment target is headless on a Linux VPS; development and builds happen on a Windows PC.
 
-It started as a fork of `louisraetz/steamidled` v1.2.0 (commit `9f2b1ab`) and now lives at `github.com/Laakdal/steamidler` (version reset to 0.1.0). Every file taken from the fork has since been rewritten, so the code is this project's own and `LICENSE` names only Laakdal (`docs/superpowers/specs/2026-10-26-own-codebase-design.md`). Changes since the fork:
+It started as a fork of `louisraetz/steamidled` v1.2.0 (commit `9f2b1ab`) and now lives at `github.com/Laakdal/steamidler` (version reset to 0.1.0). Every source file and doc taken from the fork has since been rewritten, so the code is this project's own and `LICENSE` names only Laakdal (`docs/superpowers/specs/2026-10-26-own-codebase-design.md`). Changes since the fork:
 
 - Upstream's notifications replaced by a Discord bot with a backup webhook (`src/discord/`, flag `--setup-discord`). The bot also takes `/add`, `/remove` and `/status` from the owner, and they change the saved selection.
 - The selected games are saved on every change and restored on every start; favorites, the randomizer and the forced Online status were removed; `src/index.ts` was split into modules; the tests live in `test/` with a GitHub Actions check.

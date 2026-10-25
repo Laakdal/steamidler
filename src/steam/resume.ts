@@ -62,6 +62,7 @@ export class Resume {
   private failures = 0;
   private rateLimits = 0;
 
+  // Takes the shared runtime, the flush (for the takeover report) and the screen's refresh loop
   constructor(
     private readonly rt: Runtime,
     private readonly flush: Flush,
@@ -73,6 +74,7 @@ export class Resume {
     this.rt.timers.timeout('resume', () => void this.attemptResume(), ms);
   }
 
+  // A logon got through: the next failure counts from one again
   private resetFailures(): void {
     this.failures = 0;
     this.rateLimits = 0;

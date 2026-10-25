@@ -108,10 +108,12 @@ export function showIdlingStatus(
   );
 }
 
+// The line after a successful login
 export function showLoginSuccess(accountName: string): void {
   console.log(chalk.green(`\n  Logged in as ${chalk.bold(accountName)}\n`));
 }
 
+// Why a login failed, before the login menu comes back
 export function showLoginError(error: string): void {
   console.log(chalk.red(`\n  Login failed: ${error}\n`));
 }
@@ -121,6 +123,7 @@ export function showGoodbye(): void {
   console.log(chalk.cyan('\n  Goodbye! Happy idling!\n'));
 }
 
+// An error line on the terminal, in red
 export function showError(message: string): void {
   console.log(chalk.red(`\n  Error: ${message}\n`));
 }

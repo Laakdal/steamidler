@@ -37,6 +37,7 @@ export class Flush {
   // cannot be probed, and probing one for ever would switch the check off.
   private readonly unprobeable = new Set<number>();
 
+  // Takes the shared runtime; nothing is armed until start()
   constructor(private readonly rt: Runtime) {}
 
   // Arms the relog and the check

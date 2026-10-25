@@ -530,18 +530,19 @@ Nothing in the security model. Re-checked in the rewritten code:
 - **Which failures delete the token** is unchanged (EResults 5, 15, 26, 27 and 126). The set now lives once, in `src/steam/eresults.ts`, shared by the stored login and the resume path.
 - **Outbound network** is unchanged: Steam through steam-user and steam-session, Discord as before.
 - **Config folder:** `src/storage/paths.ts` is now the one place that creates `~/.steam-idler/` (0700); `discord/config.ts`, `statusStore.ts`, `credentials.ts` and `selection.ts` use it instead of three copies.
+- **Final review fixes:** a throw while printing the QR code now ends the login instead of escaping as an unhandled rejection (which would have exited the process); a failed temp-file cleanup no longer hides the write error; an `error` event without an error object fails the logon instead of passing it.
 - `src/types/modules.d.ts` declares only what the code calls; `setPersona` is no longer declared, so a call to it would not compile.
 
 ### Remaining overlap with upstream
 
-Measured line by line against `9f2b1ab` (trimmed lines of 12+ characters): 359 of the 3,594 such lines in `src/` still occur somewhere in upstream, against 1,544 of 3,783 on `dev` before the rewrite. They are imports, function and getter signatures kept so the modules' interfaces stay the same, steam-user option names, short generic statements (`return null;`, `} catch (err) {`), and user-visible strings kept on purpose so the README, runbook and tests stay true. The two research docs share no line with upstream.
+Measured line by line against `9f2b1ab` (trimmed lines of 12+ characters): 355 of the 3,617 such lines in `src/` still occur somewhere in upstream, against 1,544 of 3,783 on `dev` before the rewrite. They are imports, function and getter signatures kept so the modules' interfaces stay the same, steam-user option names, short generic statements (`return null;`, `} catch (err) {`), and user-visible strings kept on purpose so the README, runbook and tests stay true. The two research docs share no line with upstream.
 
 ### Validation
 
 | Check | Outcome |
 |---|---|
 | `pnpm build` (`tsc`, strict) | Passed, 0 errors |
-| Offline tests (`npx pnpm@10.34.6 test`) | 297/297 passed (44 new characterization tests for the client, the login and the credentials file, written before the rewrite and passing against the old code first) |
+| Offline tests (`npx pnpm@10.34.6 test`) | 300/300 passed (44 characterization tests for the client, the login and the credentials file, written before the rewrite and passing against the old code first; 3 more from the final review) |
 | `pnpm-lock.yaml` | Unchanged |
 
 **Not performed:** a live run. The Steam login (QR, password and Steam Guard), the reconnects and the 4-hour relog were rewritten, and only part of that is covered offline. Before a release, run the "Core idling" and "Saved selection" checklists in `docs/live-tests.md`, plus one interactive QR login and one password login.
