@@ -1,5 +1,29 @@
-.claude
-.idea
+# Build output and dependencies
 dist
 node_modules
+*.tsbuildinfo
+
+# pnpm is the package manager; npm's lockfile is never used
 package-lock.json
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Local secrets and env files (steamidler keeps its own in ~/.steam-idler, never here)
+.env
+.env.*
+.steam-idler
+
+# Packed tarballs
+*.tgz
+
+# Editors, OS files, agent workspaces
+.claude
+.superpowers
+.idea
+.vscode
+*.swp
+.DS_Store
+Thumbs.db

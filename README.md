@@ -4,11 +4,6 @@ A command-line Steam game idler. It logs in to your Steam account and reports up
 
 Based on [steamidled](https://github.com/louisraetz/steamidled) by louisraetz (MIT).
 
-<p align="center">
-  <img src="assets/cli-1.png" width="49%" alt="Game selector" />
-  <img src="assets/cli-2.png" width="49%" alt="Idling status" />
-</p>
-
 ## Features
 
 - Log in with a QR code from the Steam mobile app, or with username, password and Steam Guard

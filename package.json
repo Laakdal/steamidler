@@ -4,13 +4,11 @@
   "description": "Steam game idler CLI and daemon - idle games and accumulate playtime",
   "type": "module",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "bin": {
     "steamidler": "dist/index.js"
   },
   "files": [
     "dist",
-    "assets",
     "README.md",
     "LICENSE"
   ],
