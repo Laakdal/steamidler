@@ -4,135 +4,121 @@ import { input, password as passwordPrompt } from '@inquirer/prompts';
 import chalk from 'chalk';
 import type { SteamClient } from './client.js';
 import { createSpinner } from '../ui/spinner.js';
-import {
-  saveCredentials,
-  loadCredentials,
-  clearCredentials,
-  hasStoredCredentials,
-} from '../storage/credentials.js';
+import { saveCredentials, loadCredentials, clearCredentials, hasStoredCredentials } from '../storage/credentials.js';
 import type { LoginResult } from '../types/index.js';
 
-// EResults that mean the stored refresh token itself is bad. Only these justify
-// deleting credentials.json — a network blip, Steam outage or rate limit at
-// startup must not brick a headless daemon into "run interactively first".
-const INVALID_TOKEN_ERESULTS = new Set<number>([
-  5, 15, 26, 27, 126, // InvalidPassword, AccessDenied, Revoked, Expired, CachedCredentialInvalid
-]);
-// steam-session gives up polling after 30s by default — too short to find the
-// phone, open the app and approve.
-const LOGIN_TIMEOUT_MS = 120_000;
-const GUARD_CODE_ATTEMPTS = 3;
+// Logon EResults that say the saved token itself is no good: InvalidPassword,
+// AccessDenied, Revoked, Expired, CachedCredentialInvalid. Only these delete
+// credentials.json; a network fault, an outage or a rate limit keeps it, or one
+// bad moment at boot would leave the headless service needing a manual login.
+const DEAD_TOKEN_ERESULTS = new Set([5, 15, 26, 27, 126]);
+// steam-session polls for 30 s by default, not enough time to find the phone
+// and approve the login
+const APPROVAL_WINDOW_MS = 120_000;
+// Wrong Steam Guard codes accepted before the login is given up
+const MAX_CODE_TRIES = 3;
 
-interface GuardAction {
+// One way Steam offers to confirm a password login
+interface ConfirmMethod {
   type: number;
   detail?: string;
 }
 
-// Authenticates via QR code scanned with the Steam mobile app
-export async function loginWithQR(client: SteamClient): Promise<LoginResult> {
+// A login session with the longer approval window
+function newSession(): LoginSession {
   const session = new LoginSession(EAuthTokenPlatformType.SteamClient);
-  session.loginTimeout = LOGIN_TIMEOUT_MS;
+  session.loginTimeout = APPROVAL_WINDOW_MS;
+  return session;
+}
 
+// Shared last step of the QR and password logins: keep the token for next
+// time, then open the Steam session with it
+async function completeLogin(client: SteamClient, refreshToken: string, accountName: string): Promise<LoginResult> {
+  saveCredentials({ accountName, refreshToken });
+  try {
+    await client.loginWithRefreshToken(refreshToken, accountName);
+    return { success: true, accountName };
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+// QR login: the owner scans the code with the Steam mobile app and approves
+export function loginWithQR(client: SteamClient): Promise<LoginResult> {
+  const session = newSession();
   return new Promise((resolve) => {
-    session.on('authenticated', async () => {
-      const refreshToken = session.refreshToken;
-      const accountName = session.accountName;
-
-      if (!refreshToken || !accountName) {
-        resolve({ success: false, error: 'Failed to get credentials from QR login' });
-        return;
-      }
-
-      saveCredentials({
-        accountName,
-        refreshToken,
-      });
-
-      try {
-        await client.loginWithRefreshToken(refreshToken, accountName);
-        resolve({ success: true, accountName });
-      } catch (err) {
-        resolve({ success: false, error: (err as Error).message });
-      }
-    });
+    const fail = (error: string): void => resolve({ success: false, error });
 
     session.on('remoteInteraction', () => {
       console.log(chalk.gray('  QR scanned — approve the login in the Steam app...'));
     });
-
-    session.on('timeout', () => {
-      resolve({ success: false, error: 'QR code timed out' });
+    session.on('authenticated', () => {
+      const { refreshToken, accountName } = session;
+      if (!refreshToken || !accountName) {
+        fail('Failed to get credentials from QR login');
+        return;
+      }
+      void completeLogin(client, refreshToken, accountName).then(resolve);
     });
+    session.on('timeout', () => fail('QR code timed out'));
+    session.on('error', (err) => fail(err.message));
 
-    session.on('error', (err) => {
-      resolve({ success: false, error: err.message });
-    });
-
-    session
-      .startWithQR()
-      .then((result) => {
-        if (result.qrChallengeUrl) {
-          console.log(chalk.cyan('\nScan this QR code with your Steam mobile app:\n'));
-          qrcode.generate(result.qrChallengeUrl, { small: true });
-          console.log(chalk.gray('\nWaiting for approval...\n'));
-        }
-      })
-      .catch((err: Error) => {
-        resolve({ success: false, error: err.message });
-      });
+    session.startWithQR().then(
+      ({ qrChallengeUrl }) => {
+        if (!qrChallengeUrl) return;
+        console.log(chalk.cyan('\nScan this QR code with your Steam mobile app:\n'));
+        qrcode.generate(qrChallengeUrl, { small: true });
+        console.log(chalk.gray('\nWaiting for approval...\n'));
+      },
+      (err: Error) => fail(err.message)
+    );
   });
 }
 
-// Authenticates via username and password with Steam Guard support
+// Password login, with Steam Guard by phone approval, emailed link, or a code
+// from the app or email. A phone approval can land while the code prompt is
+// open, so whichever finishes first ends the login and closes the other.
 export async function loginWithCredentials(client: SteamClient): Promise<LoginResult> {
-  const session = new LoginSession(EAuthTokenPlatformType.SteamClient);
-  session.loginTimeout = LOGIN_TIMEOUT_MS;
-
-  const typedAccountName = await input({
-    message: 'Steam username:',
-  });
-
-  const password = await passwordPrompt({
-    message: 'Steam password:',
-    mask: '*',
-  });
+  const session = newSession();
+  const typedName = await input({ message: 'Steam username:' });
+  const password = await passwordPrompt({ message: 'Steam password:', mask: '*' });
 
   const spinner = createSpinner('Logging in...').start();
-  // Closes an open Steam Guard code prompt when the login settles another way
-  // (phone approval, timeout, error), so two prompts never fight over stdin.
-  const promptAbort = new AbortController();
+  // Closes the code prompt once the login is decided some other way, so two
+  // prompts never compete for stdin
+  const closePrompt = new AbortController();
 
   return new Promise((resolve) => {
-    let settled = false;
-    const finish = (result: LoginResult): void => {
-      if (settled) return;
-      settled = true;
+    let over = false;
+    const end = (result: LoginResult): void => {
+      if (over) return;
+      over = true;
       spinner.stop();
-      promptAbort.abort();
-      // Stop steam-session's polling, or a phone approval after we gave up
-      // would still log the client on behind the method picker.
+      closePrompt.abort();
+      // Stops steam-session polling: an approval arriving after we gave up must
+      // not log the client on behind the next prompt
       session.cancelLoginAttempt();
       resolve(result);
     };
 
-    // Asks for a Steam Guard code, re-prompting on a rejected code. Returns
-    // silently when the prompt was aborted because the login settled elsewhere.
-    const promptGuardCode = async (action: GuardAction): Promise<void> => {
-      const isEmail = action.type === EAuthSessionGuardType.EmailCode;
-      const source = isEmail ? `email${action.detail ? ` to ${action.detail}` : ''}` : 'mobile app';
-      console.log(chalk.yellow(`\nSteam Guard code required (${source})`));
+    // Reads a Steam Guard code and submits it, up to MAX_CODE_TRIES times.
+    // Returns quietly when the prompt was closed because the login ended.
+    const askForCode = async (method: ConfirmMethod): Promise<void> => {
+      const where =
+        method.type === EAuthSessionGuardType.EmailCode
+          ? `email${method.detail ? ` to ${method.detail}` : ''}`
+          : 'mobile app';
+      console.log(chalk.yellow(`\nSteam Guard code required (${where})`));
 
-      for (let attempt = 1; attempt <= GUARD_CODE_ATTEMPTS && !settled; attempt++) {
+      for (let tryNo = 1; tryNo <= MAX_CODE_TRIES && !over; tryNo++) {
         let code: string;
         try {
-          code = await input({ message: 'Enter Steam Guard code:' }, { signal: promptAbort.signal });
+          code = await input({ message: 'Enter Steam Guard code:' }, { signal: closePrompt.signal });
         } catch (err) {
-          // AbortPromptError: the login settled elsewhere (phone approval,
-          // timeout, error). Anything else is Ctrl+C: with email Steam Guard
-          // nothing polls, so without this the login would never settle.
-          if ((err as Error).name !== 'AbortPromptError') {
-            finish({ success: false, error: 'Login cancelled' });
-          }
+          // An AbortPromptError means the login already ended. Anything else is
+          // Ctrl+C, which has to end it here: with an email code nothing polls,
+          // so the login would otherwise hang
+          if ((err as Error).name !== 'AbortPromptError') end({ success: false, error: 'Login cancelled' });
           return;
         }
         spinner.start('Verifying code...');
@@ -141,124 +127,96 @@ export async function loginWithCredentials(client: SteamClient): Promise<LoginRe
           return;
         } catch (err) {
           spinner.stop();
-          // The approval may have landed while this code was in flight: the
-          // library then cancels the attempt and this rejection is noise.
-          if (settled || promptAbort.signal.aborted) return;
-          const message = (err as Error).message;
-          if (attempt === GUARD_CODE_ATTEMPTS) {
-            finish({ success: false, error: `Steam Guard failed: ${message}` });
+          // An approval that landed meanwhile cancels the attempt and makes
+          // this submission fail; that failure means nothing
+          if (over || closePrompt.signal.aborted) return;
+          const reason = (err as Error).message;
+          if (tryNo < MAX_CODE_TRIES) {
+            console.log(chalk.red(`  Code rejected (${reason}). Try again.`));
           } else {
-            console.log(chalk.red(`  Code rejected (${message}). Try again.`));
+            end({ success: false, error: `Steam Guard failed: ${reason}` });
           }
         }
       }
     };
 
-    session.on('authenticated', async () => {
-      // Steam accepted the login (e.g. phone approval): close the code prompt
-      // right away so nothing can be submitted into a finished session.
-      promptAbort.abort();
-      const refreshToken = session.refreshToken;
-      // Steam's canonical account name keys the selection file; the typed one
-      // may differ in case and would split the selection across two files.
-      const accountName = session.accountName || typedAccountName;
+    // Picks how to wait from the confirmations Steam offers: a code prompt when
+    // a code is possible, otherwise a spinner while the owner approves
+    const waitForConfirmation = (methods: ConfirmMethod[]): void => {
+      const offers = (type: number): boolean => methods.some((m) => m.type === type);
+      const codeMethod = methods.find(
+        (m) => m.type === EAuthSessionGuardType.DeviceCode || m.type === EAuthSessionGuardType.EmailCode
+      );
+      if (offers(EAuthSessionGuardType.DeviceConfirmation)) {
+        console.log(
+          chalk.yellow(
+            codeMethod
+              ? '\nConfirm the login in your Steam mobile app, or enter the code below.'
+              : '\nPlease confirm the login request on your Steam mobile app...'
+          )
+        );
+      } else if (offers(EAuthSessionGuardType.EmailConfirmation)) {
+        console.log(chalk.yellow('\nConfirm the login via the link Steam just emailed you...'));
+      }
+      if (codeMethod) {
+        void askForCode(codeMethod);
+      } else {
+        spinner.start('Waiting for confirmation...');
+      }
+    };
 
+    session.on('authenticated', () => {
+      // Steam accepted the login: close the code prompt before anything else
+      closePrompt.abort();
+      const { refreshToken } = session;
       if (!refreshToken) {
-        finish({ success: false, error: 'Failed to get refresh token' });
+        end({ success: false, error: 'Failed to get refresh token' });
         return;
       }
-
-      saveCredentials({
-        accountName,
-        refreshToken,
-      });
-
-      try {
-        await client.loginWithRefreshToken(refreshToken, accountName);
-        finish({ success: true, accountName });
-      } catch (err) {
-        finish({ success: false, error: (err as Error).message });
-      }
+      // Steam's spelling of the account name keys the selection file; the
+      // typed one can differ in case and would split it across two files
+      void completeLogin(client, refreshToken, session.accountName || typedName).then(end);
     });
+    session.on('timeout', () => end({ success: false, error: 'Login timed out' }));
+    session.on('error', (err) => end({ success: false, error: err.message }));
 
-    session.on('timeout', () => {
-      finish({ success: false, error: 'Login timed out' });
-    });
-
-    session.on('error', (err) => {
-      finish({ success: false, error: err.message });
-    });
-
-    session
-      .startWithCredentials({ accountName: typedAccountName, password })
-      .then((result) => {
-        if (!result.actionRequired) return;
+    session.startWithCredentials({ accountName: typedName, password }).then(
+      (start) => {
+        if (!start.actionRequired) return;
         spinner.stop();
-        const actions = (result.validActions ?? []) as GuardAction[];
-        const codeAction = actions.find(
-          (a) =>
-            a.type === EAuthSessionGuardType.EmailCode || a.type === EAuthSessionGuardType.DeviceCode
-        );
-        const canConfirm = actions.some((a) => a.type === EAuthSessionGuardType.DeviceConfirmation);
-        const canEmailConfirm = actions.some(
-          (a) => a.type === EAuthSessionGuardType.EmailConfirmation
-        );
-
-        if (canConfirm) {
-          console.log(
-            chalk.yellow(
-              codeAction
-                ? '\nConfirm the login in your Steam mobile app, or enter the code below.'
-                : '\nPlease confirm the login request on your Steam mobile app...'
-            )
-          );
-        } else if (canEmailConfirm) {
-          console.log(chalk.yellow('\nConfirm the login via the link Steam just emailed you...'));
-        }
-        if (codeAction) {
-          void promptGuardCode(codeAction);
-        } else {
-          spinner.start('Waiting for confirmation...');
-        }
-      })
-      .catch((err: Error) => {
-        finish({ success: false, error: err.message });
-      });
+        waitForConfirmation((start.validActions ?? []) as ConfirmMethod[]);
+      },
+      (err: Error) => end({ success: false, error: err.message })
+    );
   });
 }
 
-// Logs in using a previously saved refresh token
+// Logs on with the token saved by an earlier login. A token Steam rejects for
+// good is deleted; any other failure keeps it for the next try.
 export async function loginWithStoredCredentials(client: SteamClient): Promise<LoginResult> {
-  const credentials = loadCredentials();
+  const saved = loadCredentials();
+  if (!saved) return { success: false, error: 'No stored credentials' };
 
-  if (!credentials) {
-    return { success: false, error: 'No stored credentials' };
-  }
-
-  const spinner = createSpinner(`Logging in as ${chalk.cyan(credentials.accountName)}...`).start();
-
+  const who = chalk.cyan(saved.accountName);
+  const spinner = createSpinner(`Logging in as ${who}...`).start();
   try {
-    await client.loginWithRefreshToken(credentials.refreshToken, credentials.accountName);
-    spinner.succeed(`Logged in as ${chalk.cyan(credentials.accountName)}`);
-    return { success: true, accountName: credentials.accountName };
+    await client.loginWithRefreshToken(saved.refreshToken, saved.accountName);
+    spinner.succeed(`Logged in as ${who}`);
+    return { success: true, accountName: saved.accountName };
   } catch (err) {
-    const e = err as Error & { eresult?: number };
-    if (e.eresult !== undefined && INVALID_TOKEN_ERESULTS.has(e.eresult)) {
+    const { message, eresult } = err as Error & { eresult?: number };
+    if (eresult !== undefined && DEAD_TOKEN_ERESULTS.has(eresult)) {
       spinner.fail('Stored credentials expired');
       clearCredentials();
-      return { success: false, error: 'Stored credentials expired — log in again', eresult: e.eresult };
+      return { success: false, error: 'Stored credentials expired — log in again', eresult };
     }
-    const label = e.eresult !== undefined ? `${e.message} (eresult ${e.eresult})` : e.message;
+    const label = eresult === undefined ? message : `${message} (eresult ${eresult})`;
     spinner.fail(`Login failed: ${label}`);
-    return {
-      success: false,
-      error: `${label} — stored credentials kept, retry later`,
-      eresult: e.eresult,
-    };
+    return { success: false, error: `${label} — stored credentials kept, retry later`, eresult };
   }
 }
 
-// Checks if stored login credentials exist
+// True when a usable login is saved
 export function hasStoredLogin(): boolean {
   return hasStoredCredentials();
 }

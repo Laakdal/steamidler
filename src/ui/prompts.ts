@@ -1,33 +1,19 @@
 import { select } from '@inquirer/prompts';
 import type { AuthMethod } from '../types/index.js';
 
-// Displays authentication method selection prompt
-export async function promptAuthMethod(hasStored: boolean): Promise<AuthMethod | 'stored'> {
-  const choices: Array<{ name: string; value: AuthMethod | 'stored'; description: string }> = [];
+type LoginChoice = AuthMethod | 'stored';
 
-  if (hasStored) {
-    choices.push({
-      name: 'Use saved login',
-      value: 'stored',
-      description: 'Login with your saved credentials',
-    });
-  }
+// The login menu, in the order shown; the saved login is offered only when one exists
+const LOGIN_CHOICES: { value: LoginChoice; name: string; description: string }[] = [
+  { value: 'stored', name: 'Use saved login', description: 'Login with your saved credentials' },
+  { value: 'qr', name: 'QR Code', description: 'Scan QR code with Steam mobile app (recommended)' },
+  { value: 'credentials', name: 'Username & Password', description: 'Login with your Steam credentials' },
+];
 
-  choices.push(
-    {
-      name: 'QR Code',
-      value: 'qr',
-      description: 'Scan QR code with Steam mobile app (recommended)',
-    },
-    {
-      name: 'Username & Password',
-      value: 'credentials',
-      description: 'Login with your Steam credentials',
-    }
-  );
-
+// Asks how to log in
+export function promptAuthMethod(hasStored: boolean): Promise<LoginChoice> {
   return select({
     message: 'How would you like to login?',
-    choices,
+    choices: LOGIN_CHOICES.filter((c) => hasStored || c.value !== 'stored'),
   });
 }
