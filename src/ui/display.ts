@@ -2,172 +2,125 @@ import Table from 'cli-table3';
 import chalk from 'chalk';
 import type { IdlingGame } from '../types/index.js';
 
-// Table column widths include 1 char of padding on each side
-const NAME_COL_WIDTH = 38;
-const NAME_MAX_LENGTH = NAME_COL_WIDTH - 2;
+// Width of the Game column, one character of padding on each side included
+const GAME_COLUMN = 38;
+const MINUTE_MS = 60_000;
 
 export interface StatusOptions {
-  waitingReason?: string | null; // set while disconnected and auto-resuming
-  playingBlocked?: boolean; // another session on this account is playing
-  showKeyHints?: boolean; // false in headless mode, which reads no keys
+  waitingReason?: string | null; // disconnected, retrying with backoff
+  playingBlocked?: boolean; // another device on the account is playing
+  showKeyHints?: boolean; // false in headless mode, where no keys are read
 }
 
-// Displays the welcome banner
+// The title shown at start
 export function showWelcome(version?: string): void {
-  const suffix = version ? chalk.gray(` v${version}`) : '';
-  console.log(chalk.cyan.bold('\n  Steam Game Time Idler') + suffix + '\n');
+  console.log(chalk.cyan.bold('\n  Steam Game Time Idler') + (version ? chalk.gray(` v${version}`) : '') + '\n');
   console.log(chalk.gray('  Idle your Steam games to collect playtime\n'));
 }
 
-// Formats playtime minutes into a human-readable hours string
-function formatPlaytimeHours(minutes: number): string {
-  const hours = Math.floor(minutes / 60);
-  return `${hours.toLocaleString()}h`;
+// Minutes this run has added to a game. A frozen clock (paused, waiting or
+// blocked) counts only what was banked, since Steam credits nothing meanwhile.
+function gainedMinutes(game: IdlingGame, frozen: boolean): number {
+  const running = frozen ? 0 : Date.now() - game.startTime.getTime();
+  return Math.floor((game.accumulatedMs + running) / MINUTE_MS);
 }
 
-// Calculates and formats the time gained from idling
-function formatGainedTime(game: IdlingGame, isPaused: boolean): string {
-  const now = new Date();
-  let totalMs = game.accumulatedMs;
+// "+1h 5m", or "+5m" under an hour
+function gainedLabel(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  return h > 0 ? `+${h}h ${minutes % 60}m` : `+${minutes}m`;
+}
 
-  if (!isPaused) {
-    totalMs += now.getTime() - game.startTime.getTime();
+// Whole hours of Steam playtime plus this run's gain
+function totalLabel(game: IdlingGame, gained: number): string {
+  return `${Math.floor((game.initialPlaytime + gained) / 60).toLocaleString()}h`;
+}
+
+// A name cut with "..." to fit the Game column
+function fitName(name: string): string {
+  const room = GAME_COLUMN - 2;
+  return name.length > room ? `${name.slice(0, room - 3)}...` : name;
+}
+
+// The heading lines for the current state
+function heading(waitingReason: string | null, blocked: boolean): string[] {
+  if (waitingReason) {
+    return [
+      chalk.yellow.bold('\n  Steam Game Time Idler — WAITING TO RESUME\n'),
+      chalk.yellow(`  ${waitingReason}. Auto-retrying with backoff.\n`),
+    ];
   }
-
-  const totalMinutes = Math.floor(totalMs / (1000 * 60));
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-
-  if (hours > 0) {
-    return `+${hours}h ${minutes}m`;
+  if (blocked) {
+    return [
+      chalk.yellow.bold('\n  Steam Game Time Idler — BLOCKED\n'),
+      chalk.yellow('  A game is being played on this account elsewhere. Idling resumes when it stops.\n'),
+    ];
   }
-  return `+${minutes}m`;
+  return [chalk.cyan.bold('\n  Steam Game Time Idler - Idling\n')];
 }
 
-// Calculates total playtime including time gained from idling
-function getTotalPlaytime(game: IdlingGame, isPaused: boolean): string {
-  const now = new Date();
-  let gainedMs = game.accumulatedMs;
-
-  if (!isPaused) {
-    gainedMs += now.getTime() - game.startTime.getTime();
-  }
-
-  const gainedMinutes = Math.floor(gainedMs / (1000 * 60));
-  const totalMinutes = game.initialPlaytime + gainedMinutes;
-
-  return formatPlaytimeHours(totalMinutes);
-}
-
-// Renders the Game cell: the name truncated to the column width
-function nameCell(game: IdlingGame, dim = false): string {
-  const truncated =
-    game.name.length > NAME_MAX_LENGTH ? game.name.substring(0, NAME_MAX_LENGTH - 3) + '...' : game.name;
-  return dim ? chalk.gray(truncated) : truncated;
-}
-
-// Displays a formatted table showing the status of all idling games
+// Redraws the idling screen: a table of every game with its total, its gain
+// this run and its state, then a count line and the key help
 export function showIdlingStatus(
   idlingGames: readonly IdlingGame[],
   pausedGames: readonly IdlingGame[] = [],
   options: StatusOptions = {}
 ): void {
-  const isWaiting = !!options.waitingReason;
-  const isBlocked = !!options.playingBlocked;
-  // While waiting or blocked no server playtime accrues, so the live delta is
-  // not added for idling rows either.
-  const frozen = isWaiting || isBlocked;
-
-  console.clear();
-
-  if (isWaiting) {
-    console.log(chalk.yellow.bold('\n  Steam Game Time Idler — WAITING TO RESUME\n'));
-    console.log(chalk.yellow(`  ${options.waitingReason}. Auto-retrying with backoff.\n`));
-  } else if (isBlocked) {
-    console.log(chalk.yellow.bold('\n  Steam Game Time Idler — BLOCKED\n'));
-    console.log(
-      chalk.yellow(
-        '  A game is being played on this account elsewhere. Idling resumes when it stops.\n'
-      )
-    );
-  } else {
-    console.log(chalk.cyan.bold('\n  Steam Game Time Idler - Idling\n'));
-  }
+  const waitingReason = options.waitingReason || null;
+  const blocked = !!options.playingBlocked;
+  // No playtime accrues while waiting or blocked, idling rows included
+  const frozen = waitingReason !== null || blocked;
+  const state = waitingReason ? chalk.yellow('Waiting') : blocked ? chalk.yellow('Blocked') : chalk.green('Idling');
 
   const table = new Table({
-    head: [
-      chalk.cyan('Game'),
-      chalk.cyan('Total'),
-      chalk.cyan('Gained'),
-      chalk.cyan('Status'),
-    ],
-    colWidths: [NAME_COL_WIDTH, 10, 12, 14],
-    style: {
-      head: [],
-      border: ['gray'],
-    },
+    head: ['Game', 'Total', 'Gained', 'Status'].map((h) => chalk.cyan(h)),
+    colWidths: [GAME_COLUMN, 10, 12, 14],
+    style: { head: [], border: ['gray'] },
   });
-
-  const idlingStatus = isWaiting
-    ? chalk.yellow('Waiting')
-    : isBlocked
-    ? chalk.yellow('Blocked')
-    : chalk.green('Idling');
-
   for (const game of idlingGames) {
-    table.push([
-      nameCell(game),
-      getTotalPlaytime(game, frozen),
-      chalk.green(formatGainedTime(game, frozen)),
-      idlingStatus,
-    ]);
+    const gained = gainedMinutes(game, frozen);
+    table.push([fitName(game.name), totalLabel(game, gained), chalk.green(gainedLabel(gained)), state]);
   }
-
   for (const game of pausedGames) {
+    const gained = gainedMinutes(game, true);
     table.push([
-      nameCell(game, true),
-      chalk.gray(getTotalPlaytime(game, true)),
-      chalk.gray(formatGainedTime(game, true)),
+      chalk.gray(fitName(game.name)),
+      chalk.gray(totalLabel(game, gained)),
+      chalk.gray(gainedLabel(gained)),
       chalk.yellow('Paused'),
     ]);
   }
 
+  console.clear();
+  for (const line of heading(waitingReason, blocked)) console.log(line);
   console.log(table.toString());
 
-  const parts: string[] = [];
-  if (pausedGames.length > 0) parts.push(chalk.yellow(`${pausedGames.length} paused`));
-  const suffix = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+  const n = idlingGames.length;
+  const paused = pausedGames.length > 0 ? ` (${chalk.yellow(`${pausedGames.length} paused`)})` : '';
+  console.log(chalk.green(`\n  Idling ${chalk.bold(n)} game${n === 1 ? '' : 's'}`) + paused + '\n');
 
-  console.log(
-    chalk.green(`\n  Idling ${chalk.bold(idlingGames.length)} game${idlingGames.length !== 1 ? 's' : ''}`) +
-      suffix +
-      '\n'
-  );
-  // Key hints only make sense on a terminal that actually reads keys
+  // Key help only where keys are actually read
   if (!process.stdout.isTTY || options.showKeyHints === false) return;
-  if (isWaiting) {
-    console.log(chalk.gray("  Press 'Q' to quit — edit disabled while waiting\n"));
-  } else {
-    console.log(chalk.gray("  Press 'E' to edit games | 'Q' to quit\n"));
-  }
+  console.log(
+    chalk.gray(
+      waitingReason ? "  Press 'Q' to quit — edit disabled while waiting\n" : "  Press 'E' to edit games | 'Q' to quit\n"
+    )
+  );
 }
 
-// Displays a success message after login
 export function showLoginSuccess(accountName: string): void {
   console.log(chalk.green(`\n  Logged in as ${chalk.bold(accountName)}\n`));
 }
 
-// Displays a login error message
 export function showLoginError(error: string): void {
   console.log(chalk.red(`\n  Login failed: ${error}\n`));
 }
 
-// Displays a goodbye message on exit
+// The last line of a clean exit
 export function showGoodbye(): void {
   console.log(chalk.cyan('\n  Goodbye! Happy idling!\n'));
 }
 
-// Displays an error message
 export function showError(message: string): void {
   console.log(chalk.red(`\n  Error: ${message}\n`));
 }

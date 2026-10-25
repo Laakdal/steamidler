@@ -3,376 +3,310 @@ import chalk from 'chalk';
 import type { SteamGame, GameSelection, GameSource, GameSelectorResult } from '../types/index.js';
 import { MAX_IDLE_GAMES } from '../constants.js';
 
-interface SelectableGame {
+// One line of the picker
+interface Row {
   appid: number;
   name: string;
   playtime: number;
-  selected: boolean;
-  // Selected when the picker opened: listed first, under the Selected header.
-  // Fixed while the picker is open, so ticking never moves a row.
-  inSelectedGroup: boolean;
-  // Saved but not in the library (null source): shown so it can be unticked,
-  // otherwise an edit-mode apply would drop it from the saved selection.
+  ticked: boolean;
+  // Ticked when the picker opened. Decides the row's place (the SELECTED group
+  // on top) and never changes while the picker is open, so ticking never moves a row.
+  pinned: boolean;
+  // null for a saved game the library does not have right now. It is listed
+  // so it can be unticked; leaving it out would drop it on an edit-mode apply.
   source: GameSource | null;
 }
 
-type SourceFilter = 'all' | 'owned' | 'free' | 'shared';
+type Filter = 'all' | GameSource;
 
-const FILTER_CYCLE: SourceFilter[] = ['all', 'owned', 'free', 'shared'];
+// T steps through these, in this order
+const FILTERS: Filter[] = ['all', 'owned', 'free', 'shared'];
 
-const SOURCE_BADGE: Record<GameSource, string> = {
-  owned: '  ',
-  free: chalk.green('$ '),
-  shared: chalk.magenta('↪ '),
-};
-
-const FILTER_LABEL: Record<SourceFilter, string> = {
+const FILTER_NAMES: Record<Filter, string> = {
   all: 'all',
   owned: 'owned',
   free: 'free-to-play',
   shared: 'family shared',
 };
 
-// Interactive game selection with keyboard navigation. `selected` is the saved
-// selection at start, or what is idling in edit mode; its games open ticked
-// and listed first, including saved games missing from the library.
-export async function selectGames(
+// Two-character marker in front of a name
+const BADGES: Record<GameSource, string> = {
+  owned: '  ',
+  free: chalk.green('$ '),
+  shared: chalk.magenta('↪ '),
+};
+
+// What a key did: nothing visible, a new screen, or the end of the picker
+type Outcome = 'ignore' | 'redraw' | { result: GameSelectorResult };
+
+// Playtime as the picker shows it
+function playtimeLabel(minutes: number): string {
+  if (minutes === 0) return 'never played';
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60).toLocaleString()}h`;
+}
+
+// The rows in their fixed order: games already chosen (from the library, then
+// the missing ones), then the rest of the library, each part A to Z. The
+// chosen list is cut to the first MAX_IDLE_GAMES distinct games, so a
+// hand-edited file can never hand Enter a list Steam would refuse.
+function buildRows(library: SteamGame[], chosen: GameSelection[]): Row[] {
+  const chosenIds = new Set<number>();
+  for (const g of chosen) {
+    if (chosenIds.size === MAX_IDLE_GAMES) break;
+    chosenIds.add(g.appid);
+  }
+  const inLibrary = new Set(library.map((g) => g.appid));
+  const aToZ = (a: Row, b: Row): number => a.name.localeCompare(b.name);
+
+  const libraryRows = library.map((g): Row => {
+    const isChosen = chosenIds.has(g.appid);
+    return { appid: g.appid, name: g.name, playtime: g.playtime_forever, ticked: isChosen, pinned: isChosen, source: g.source };
+  });
+  const missingRows = new Map<number, Row>();
+  for (const g of chosen) {
+    if (chosenIds.has(g.appid) && !inLibrary.has(g.appid) && !missingRows.has(g.appid)) {
+      missingRows.set(g.appid, { appid: g.appid, name: g.name, playtime: 0, ticked: true, pinned: true, source: null });
+    }
+  }
+
+  return [
+    ...libraryRows.filter((r) => r.pinned).sort(aToZ),
+    ...[...missingRows.values()].sort(aToZ),
+    ...libraryRows.filter((r) => !r.pinned).sort(aToZ),
+  ];
+}
+
+// Everything the picker remembers between keys
+class Picker {
+  cursor = 0; // index into shown()
+  top = 0; // index of the first shown row on screen
+  filter: Filter = 'all';
+  query = '';
+  typing = false; // the search line has the keyboard
+  hint = ''; // one-off message, gone after the next key
+  // Up to ~20 lines go to the title, counters, headers and key help; the list
+  // gets the rest, so a plain 24-line terminal still shows the counters.
+  readonly pageSize = Math.min(30, Math.max(5, (process.stdout.rows || 24) - 20));
+
+  constructor(readonly rows: Row[], readonly isEditMode: boolean, readonly openedWith: GameSelection[]) {}
+
+  // The rows passing the filter and the search. A missing game has no
+  // source, so only the "all" filter shows it.
+  shown(): Row[] {
+    const needle = this.query.toLowerCase();
+    return this.rows.filter(
+      (r) => (this.filter === 'all' || r.source === this.filter) && r.name.toLowerCase().includes(needle)
+    );
+  }
+
+  tickedCount(): number {
+    return this.rows.filter((r) => r.ticked).length;
+  }
+
+  // Moves the cursor, clamped to the list, and scrolls just enough to keep it on screen
+  moveTo(index: number): void {
+    this.cursor = Math.max(0, Math.min(index, this.shown().length - 1));
+    if (this.cursor < this.top) this.top = this.cursor;
+    if (this.cursor >= this.top + this.pageSize) this.top = this.cursor - this.pageSize + 1;
+  }
+
+  // A new search or filter starts at the top of the list
+  resetPosition(): void {
+    this.cursor = 0;
+    this.top = 0;
+  }
+
+  // Next filter, keeping the cursor on the same game when it stays visible
+  cycleFilter(): void {
+    const focused = this.shown()[this.cursor]?.appid;
+    this.filter = FILTERS[(FILTERS.indexOf(this.filter) + 1) % FILTERS.length] ?? 'all';
+    const list = this.shown();
+    this.top = Math.min(this.top, Math.max(0, list.length - this.pageSize));
+    this.moveTo(Math.max(0, list.findIndex((r) => r.appid === focused)));
+  }
+
+  // Space: flips the row under the cursor, refusing a tick past Steam's cap
+  toggle(): void {
+    const row = this.shown()[this.cursor];
+    if (!row) return;
+    if (!row.ticked && this.tickedCount() >= MAX_IDLE_GAMES) {
+      this.hint = `Steam allows at most ${MAX_IDLE_GAMES} games at once`;
+      return;
+    }
+    row.ticked = !row.ticked;
+  }
+
+  // Enter: the ticked games, or null with a hint when they cannot start
+  confirm(): GameSelection[] | null {
+    const ticked = this.rows.filter((r) => r.ticked);
+    if (ticked.length === 0) {
+      this.hint = 'Nothing selected — Space toggles a game';
+      return null;
+    }
+    // Missing games are never sent to Steam: alone they would idle nothing
+    if (ticked.every((r) => r.source === null)) {
+      this.hint = 'Pick at least one game from your library';
+      return null;
+    }
+    return ticked.map((r) => ({ appid: r.appid, name: r.name }));
+  }
+
+  // Keys while the search line is open
+  searchKey(str: string | undefined, key: readline.Key): Outcome {
+    if (key.name === 'return') {
+      this.typing = false;
+    } else if (key.name === 'escape') {
+      this.typing = false;
+      this.query = '';
+      this.resetPosition();
+    } else if (key.name === 'backspace') {
+      if (this.query) {
+        this.query = this.query.slice(0, -1);
+        this.resetPosition();
+      }
+    } else if (str?.length === 1 && !key.ctrl && !key.meta && str.charCodeAt(0) >= 32) {
+      this.query += str;
+      this.resetPosition();
+    } else {
+      return 'ignore';
+    }
+    return 'redraw';
+  }
+
+  // Handles one keypress
+  react(str: string | undefined, key: readline.Key): Outcome {
+    this.hint = '';
+    // Ctrl+C goes back to the caller, which logs off cleanly rather than
+    // exiting in the middle of a session
+    if (key.ctrl && key.name === 'c') return { result: { selectedGames: [], aborted: true } };
+
+    const last = this.shown().length - 1;
+    const jumps: Record<string, number> = {
+      up: this.cursor - 1,
+      down: this.cursor + 1,
+      pageup: this.cursor - this.pageSize,
+      pagedown: this.cursor + this.pageSize,
+      home: 0,
+      end: last,
+    };
+    const jump = key.name !== undefined && Object.hasOwn(jumps, key.name) ? jumps[key.name] : undefined;
+    if (jump !== undefined) {
+      this.moveTo(jump);
+      return 'redraw';
+    }
+
+    if (this.typing) return this.searchKey(str, key);
+
+    if (str === '/') {
+      this.typing = true;
+      return 'redraw';
+    }
+    if (str === 't' || str === 'T') {
+      this.cycleFilter();
+      return 'redraw';
+    }
+    if (key.name === 'space') {
+      this.toggle();
+      return 'redraw';
+    }
+    if (key.name === 'escape') {
+      if (this.query) {
+        this.query = '';
+        this.resetPosition();
+        return 'redraw';
+      }
+      // In edit mode Esc keeps exactly what is idling now
+      return this.isEditMode ? { result: { selectedGames: this.openedWith } } : 'ignore';
+    }
+    if (key.name === 'return') {
+      const games = this.confirm();
+      return games ? { result: { selectedGames: games } } : 'redraw';
+    }
+    return 'ignore';
+  }
+
+  // Draws the whole screen
+  draw(): void {
+    const list = this.shown();
+    const pinnedShown = list.filter((r) => r.pinned).length;
+    const counts = { owned: 0, free: 0, shared: 0 };
+    for (const r of this.rows) if (r.source) counts[r.source]++;
+
+    console.clear();
+    console.log(chalk.cyan.bold('\n  Select Games to Idle\n'));
+    // Missing games count toward the cap: they hold a slot in the selection
+    console.log(
+      chalk.gray(
+        `  Selected: ${this.tickedCount()}/${MAX_IDLE_GAMES} | ` +
+          `Owned: ${counts.owned} ${chalk.green('$')} ${counts.free} ${chalk.magenta('↪')} ${counts.shared}`
+      )
+    );
+    console.log(chalk.gray(`  Filter: ${chalk.cyan(FILTER_NAMES[this.filter])} (T to cycle)`));
+    if (this.typing) {
+      console.log(chalk.cyan(`  Search: ${this.query}_`));
+    } else if (this.query) {
+      console.log(chalk.gray(`  Search: ${chalk.cyan(this.query)} (/ to edit, Esc to clear)`));
+    }
+    if (this.hint) console.log(chalk.yellow(`  ${this.hint}`));
+    console.log('');
+
+    const end = Math.min(this.top + this.pageSize, list.length);
+    if (pinnedShown > 0 && this.top < pinnedShown) console.log(chalk.green.bold('  SELECTED\n'));
+    for (let i = this.top; i < end; i++) {
+      const row = list[i];
+      if (!row) continue;
+      if (i === pinnedShown && pinnedShown > 0) {
+        console.log('');
+        console.log(chalk.gray.bold('  ALL GAMES\n'));
+      }
+      const box = row.ticked ? chalk.green('[✓]') : chalk.gray('[ ]');
+      const name = row.name.length > 40 ? `${row.name.slice(0, 37)}...` : row.name;
+      const after = row.source ? chalk.gray(`(${playtimeLabel(row.playtime)})`) : chalk.yellow('(not in library)');
+      const line = `  ${box} ${row.source ? BADGES[row.source] : '  '}${name} ${after}`;
+      console.log(i === this.cursor ? chalk.bgGray.white(line) : line);
+    }
+    if (list.length === 0) console.log(chalk.gray('  No games match the current filter.'));
+    if (list.length > this.pageSize) console.log(chalk.gray(`\n  ${this.top + 1}-${end} of ${list.length}`));
+
+    console.log('');
+    if (this.typing) {
+      console.log(chalk.gray('  Type to filter | Backspace: delete | Esc: cancel | Enter: confirm'));
+    } else {
+      console.log(chalk.gray('  ↑/↓ PgUp/PgDn Home/End: Navigate | Space: Toggle | T: Filter | /: Search'));
+      console.log(chalk.gray(this.isEditMode ? '  Enter: Apply | Esc: Back (keep selection)' : '  Enter: Start'));
+    }
+    console.log('');
+  }
+}
+
+// The keyboard game picker. `selected` is what opens ticked and on top: the
+// saved selection at start, or what is idling in edit mode, saved games
+// missing from the library included.
+export function selectGames(
   games: SteamGame[],
   selected: GameSelection[],
   isEditMode: boolean
 ): Promise<GameSelectorResult> {
-  // A hand-edited file could repeat a game or exceed the cap; keep the first
-  // MAX_IDLE_GAMES unique ones so Enter never trips the gamesPlayed cap.
-  const preselected = new Set<number>();
-  for (const game of selected) {
-    if (preselected.size >= MAX_IDLE_GAMES) break;
-    preselected.add(game.appid);
-  }
-
-  const libraryIds = new Set(games.map((g) => g.appid));
-  const byName = (a: SelectableGame, b: SelectableGame): number => a.name.localeCompare(b.name);
-
-  const libraryRows: SelectableGame[] = games.map((game) => ({
-    appid: game.appid,
-    name: game.name,
-    playtime: game.playtime_forever,
-    selected: preselected.has(game.appid),
-    inSelectedGroup: preselected.has(game.appid),
-    source: game.source,
-  }));
-  const seenMissing = new Set<number>();
-  const missingRows: SelectableGame[] = [];
-  for (const game of selected) {
-    if (!preselected.has(game.appid) || libraryIds.has(game.appid) || seenMissing.has(game.appid)) continue;
-    seenMissing.add(game.appid);
-    missingRows.push({ appid: game.appid, name: game.name, playtime: 0, selected: true, inSelectedGroup: true, source: null });
-  }
-
-  // Order fixed at open: the Selected group (library games, then the missing
-  // ones), then the rest of the library, each alphabetically.
-  const selectableGames: SelectableGame[] = [
-    ...libraryRows.filter((g) => g.inSelectedGroup).sort(byName),
-    ...missingRows.sort(byName),
-    ...libraryRows.filter((g) => !g.inSelectedGroup).sort(byName),
-  ];
+  const picker = new Picker(buildRows(games, selected), isEditMode, selected);
+  const stdin = process.stdin;
 
   return new Promise((resolve) => {
-    let cursorIndex = 0;
-    let scrollOffset = 0;
-    let sourceFilter: SourceFilter = 'all';
-    let searchQuery = '';
-    let isSearchMode = false;
-    let hint = ''; // one-shot feedback line, cleared on the next key
-    // Title, counters, section headers, scroll line, hint and key help take up
-    // to ~20 rows; size the list so a default 24-row terminal keeps the
-    // counters on screen.
-    const pageSize = Math.min(30, Math.max(5, (process.stdout.rows || 24) - 20));
-
-    const matchesQuery = (g: SelectableGame): boolean =>
-      searchQuery.length === 0 ||
-      g.name.toLowerCase().includes(searchQuery.toLowerCase());
-
-    // A missing game has no source, so only the "all" filter shows it
-    const matchesFilter = (g: SelectableGame): boolean =>
-      (sourceFilter === 'all' || g.source === sourceFilter) && matchesQuery(g);
-
-    // The rows on screen, in the fixed order
-    const getVisibleGames = (): SelectableGame[] => selectableGames.filter(matchesFilter);
-
-    const sourceCounts = (): Record<GameSource, number> => {
-      const counts: Record<GameSource, number> = { owned: 0, free: 0, shared: 0 };
-      for (const g of selectableGames) if (g.source) counts[g.source]++;
-      return counts;
-    };
-
-    const render = () => {
-      console.clear();
-
-      const filteredGames = getVisibleGames();
-      const groupCount = filteredGames.filter((g) => g.inSelectedGroup).length;
-
-      console.log(chalk.cyan.bold('\n  Select Games to Idle\n'));
-
-      // Count selections (missing games included: they hold a slot) + source breakdown
-      const selectedCount = selectableGames.filter((g) => g.selected).length;
-      const counts = sourceCounts();
-      console.log(
-        chalk.gray(
-          `  Selected: ${selectedCount}/${MAX_IDLE_GAMES} | ` +
-            `Owned: ${counts.owned} ${chalk.green('$')} ${counts.free} ${chalk.magenta('↪')} ${counts.shared}`
-        )
-      );
-      console.log(chalk.gray(`  Filter: ${chalk.cyan(FILTER_LABEL[sourceFilter])} (T to cycle)`));
-      if (isSearchMode) {
-        console.log(chalk.cyan(`  Search: ${searchQuery}_`));
-      } else if (searchQuery.length > 0) {
-        console.log(chalk.gray(`  Search: ${chalk.cyan(searchQuery)} (/ to edit, Esc to clear)`));
-      }
-      if (hint) console.log(chalk.yellow(`  ${hint}`));
-      console.log('');
-
-      const visibleStart = scrollOffset;
-      const visibleEnd = Math.min(scrollOffset + pageSize, filteredGames.length);
-      const visibleGames = filteredGames.slice(visibleStart, visibleEnd);
-
-      // Render the Selected header if the group has rows and some are on screen
-      if (groupCount > 0 && scrollOffset < groupCount) {
-        console.log(chalk.green.bold('  SELECTED\n'));
-      }
-
-      let displayIndex = visibleStart;
-      for (const game of visibleGames) {
-        if (displayIndex === groupCount && groupCount > 0) {
-          console.log('');
-          console.log(chalk.gray.bold('  ALL GAMES\n'));
-        }
-
-        const isCurrent = displayIndex === cursorIndex;
-        const checkbox = game.selected ? chalk.green('[✓]') : chalk.gray('[ ]');
-        const badge = game.source ? SOURCE_BADGE[game.source] : '  ';
-        const detail = game.source ? chalk.gray(`(${formatPlaytime(game.playtime)})`) : chalk.yellow('(not in library)');
-        const name =
-          game.name.length > 40 ? game.name.substring(0, 37) + '...' : game.name;
-
-        const line = `  ${checkbox} ${badge}${name} ${detail}`;
-
-        if (isCurrent) {
-          console.log(chalk.bgGray.white(line));
-        } else {
-          console.log(line);
-        }
-
-        displayIndex++;
-      }
-
-      if (filteredGames.length === 0) {
-        console.log(chalk.gray('  No games match the current filter.'));
-      }
-
-      // Scroll indicator
-      if (filteredGames.length > pageSize) {
-        const scrollInfo = `  ${visibleStart + 1}-${visibleEnd} of ${filteredGames.length}`;
-        console.log(chalk.gray(`\n${scrollInfo}`));
-      }
-
-      // Instructions
-      console.log('');
-      if (isSearchMode) {
-        console.log(chalk.gray('  Type to filter | Backspace: delete | Esc: cancel | Enter: confirm'));
-      } else {
-        console.log(chalk.gray('  ↑/↓ PgUp/PgDn Home/End: Navigate | Space: Toggle | T: Filter | /: Search'));
-        console.log(chalk.gray(isEditMode ? '  Enter: Apply | Esc: Back (keep selection)' : '  Enter: Start'));
-      }
-      console.log('');
-    };
-
-    const handleKey = (str: string | undefined, key: readline.Key) => {
-      const allGames = getVisibleGames();
-      hint = '';
-
-      // Hand the abort back to the caller so it can log off cleanly instead of
-      // exiting mid-session.
-      if (key.ctrl && key.name === 'c') {
-        cleanup();
-        resolve({ selectedGames: [], aborted: true });
-        return;
-      }
-
-      if (key.name === 'up') {
-        if (cursorIndex > 0) {
-          cursorIndex--;
-          if (cursorIndex < scrollOffset) {
-            scrollOffset = cursorIndex;
-          }
-        }
-        render();
-        return;
-      }
-
-      if (key.name === 'down') {
-        if (cursorIndex < allGames.length - 1) {
-          cursorIndex++;
-          if (cursorIndex >= scrollOffset + pageSize) {
-            scrollOffset = cursorIndex - pageSize + 1;
-          }
-        }
-        render();
-        return;
-      }
-
-      if (key.name === 'pageup' || key.name === 'pagedown' || key.name === 'home' || key.name === 'end') {
-        const last = Math.max(0, allGames.length - 1);
-        if (key.name === 'home') cursorIndex = 0;
-        else if (key.name === 'end') cursorIndex = last;
-        else if (key.name === 'pageup') cursorIndex = Math.max(0, cursorIndex - pageSize);
-        else cursorIndex = Math.min(last, cursorIndex + pageSize);
-        if (cursorIndex < scrollOffset) scrollOffset = cursorIndex;
-        else if (cursorIndex >= scrollOffset + pageSize) scrollOffset = cursorIndex - pageSize + 1;
-        render();
-        return;
-      }
-
-      if (isSearchMode) {
-        if (key.name === 'return') {
-          isSearchMode = false;
-          render();
-          return;
-        }
-        if (key.name === 'escape') {
-          isSearchMode = false;
-          searchQuery = '';
-          cursorIndex = 0;
-          scrollOffset = 0;
-          render();
-          return;
-        }
-        if (key.name === 'backspace') {
-          if (searchQuery.length > 0) {
-            searchQuery = searchQuery.slice(0, -1);
-            cursorIndex = 0;
-            scrollOffset = 0;
-          }
-          render();
-          return;
-        }
-        if (str && str.length === 1 && !key.ctrl && !key.meta && str.charCodeAt(0) >= 32) {
-          searchQuery += str;
-          cursorIndex = 0;
-          scrollOffset = 0;
-          render();
-          return;
-        }
-        return;
-      }
-
-      if (str === '/') {
-        isSearchMode = true;
-        render();
-        return;
-      }
-
-      if (key.name === 'escape') {
-        if (searchQuery.length > 0) {
-          searchQuery = '';
-          cursorIndex = 0;
-          scrollOffset = 0;
-          render();
-          return;
-        }
-        // Edit mode: leave the selection exactly as it is idling now
-        if (isEditMode) {
-          cleanup();
-          resolve({ selectedGames: selected });
-        }
-        return;
-      }
-
-      if (key.name === 'space') {
-        const game = allGames[cursorIndex];
-        if (game) {
-          const selectedCount = selectableGames.filter((g) => g.selected).length;
-          if (!game.selected && selectedCount >= MAX_IDLE_GAMES) {
-            hint = `Steam allows at most ${MAX_IDLE_GAMES} games at once`;
-            render();
-            return;
-          }
-          game.selected = !game.selected;
-        }
-        render();
-        return;
-      }
-
-      if (str === 't' || str === 'T') {
-        const focusedAppId = allGames[cursorIndex]?.appid;
-        const idx = FILTER_CYCLE.indexOf(sourceFilter);
-        sourceFilter = FILTER_CYCLE[(idx + 1) % FILTER_CYCLE.length] ?? 'all';
-
-        const visible = getVisibleGames();
-        const refoundIndex =
-          focusedAppId !== undefined ? visible.findIndex((g) => g.appid === focusedAppId) : -1;
-        cursorIndex = refoundIndex >= 0 ? refoundIndex : 0;
-        scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, visible.length - pageSize)));
-        if (cursorIndex < scrollOffset) {
-          scrollOffset = cursorIndex;
-        } else if (cursorIndex >= scrollOffset + pageSize) {
-          scrollOffset = cursorIndex - pageSize + 1;
-        }
-        render();
-        return;
-      }
-
-      if (key.name === 'return') {
-        const ticked = selectableGames.filter((g) => g.selected);
-        if (ticked.length === 0) {
-          hint = 'Nothing selected — Space toggles a game';
-          render();
-          return;
-        }
-        // Missing games are never sent to Steam, so they alone would idle nothing
-        if (!ticked.some((g) => g.source !== null)) {
-          hint = 'Pick at least one game from your library';
-          render();
-          return;
-        }
-        cleanup();
-        resolve({ selectedGames: ticked.map((g) => ({ appid: g.appid, name: g.name })) });
-        return;
+    const onKey = (str: string | undefined, key: readline.Key): void => {
+      const outcome = picker.react(str, key);
+      if (outcome === 'redraw') {
+        picker.draw();
+      } else if (outcome !== 'ignore') {
+        stdin.removeListener('keypress', onKey);
+        if (stdin.isTTY) stdin.setRawMode(false);
+        resolve(outcome.result);
       }
     };
 
-    readline.emitKeypressEvents(process.stdin);
-    if (process.stdin.isTTY) {
-      process.stdin.setRawMode(true);
-    }
-    process.stdin.resume();
-
-    const keyHandler = (str: string | undefined, key: readline.Key) => {
-      handleKey(str, key);
-    };
-
-    process.stdin.on('keypress', keyHandler);
-
-    const cleanup = () => {
-      process.stdin.removeListener('keypress', keyHandler);
-      if (process.stdin.isTTY) {
-        process.stdin.setRawMode(false);
-      }
-    };
-
-    render();
+    readline.emitKeypressEvents(stdin);
+    if (stdin.isTTY) stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on('keypress', onKey);
+    picker.draw();
   });
-}
-
-// Formats playtime minutes into a human-readable string
-function formatPlaytime(minutes: number): string {
-  if (minutes === 0) {
-    return 'never played';
-  }
-
-  const hours = Math.floor(minutes / 60);
-  if (hours < 1) {
-    return `${minutes}m`;
-  }
-
-  return `${hours.toLocaleString()}h`;
 }

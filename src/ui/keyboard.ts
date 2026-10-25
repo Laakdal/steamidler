@@ -6,95 +6,80 @@ import { selectGames } from './gameSelector.js';
 import { showError } from './display.js';
 import { installSelection } from '../selection.js';
 
-// Sets up raw mode keyboard input handling for edit and quit commands. Headless
-// never touches stdin: `steamidler --headless &` from a shell would otherwise
-// be stopped by SIGTTOU when setRawMode runs in the background.
-export function setupKeyboardInput(rt: Runtime, editMode: () => Promise<void>): void {
-  if (rt.isHeadless) return;
-  if (process.stdin.isTTY) {
-    readline.emitKeypressEvents(process.stdin);
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-
-    process.stdin.on('keypress', async (str, key) => {
-      // Raw mode stays on during the exit grace; nothing may repaint over the goodbye
-      if (rt.isShuttingDown) return;
-      if (key && key.ctrl && key.name === 'c') {
-        rt.actions.shutdown();
-        return;
-      }
-
-      if (rt.isInEditMode) {
-        return;
-      }
-
-      if (str === 'e' || str === 'E') {
-        await editMode();
-        return;
-      }
-
-      if (str === 'q' || str === 'Q') {
-        rt.actions.shutdown();
-        return;
-      }
-    });
-  }
+// Raw mode, so single keys arrive without Enter. Taken at start and again
+// after the picker, which leaves raw mode off when it closes.
+function takeKeyboard(): void {
+  readline.emitKeypressEvents(process.stdin);
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
 }
 
-// Builds the E key's edit mode, which changes the game selection while idling
+// The idling screen's keys: E opens the picker, Q and Ctrl+C quit. Nothing
+// here runs headless: raw mode in a background process (`--headless &`)
+// gets it stopped by SIGTTOU.
+export function setupKeyboardInput(rt: Runtime, editMode: () => Promise<void>): void {
+  if (rt.isHeadless || !process.stdin.isTTY) return;
+  takeKeyboard();
+  process.stdin.on('keypress', (str: string | undefined, key: readline.Key | undefined) => {
+    // Raw mode is still on during the exit grace: no key may draw over the goodbye
+    if (rt.isShuttingDown) return;
+    // Ctrl+C quits even with the picker open; other keys belong to the picker then
+    if (key?.ctrl && key.name === 'c') {
+      rt.actions.shutdown();
+    } else if (rt.isInEditMode) {
+      return;
+    } else if (str?.toLowerCase() === 'e') {
+      void editMode();
+    } else if (str?.toLowerCase() === 'q') {
+      rt.actions.shutdown();
+    }
+  });
+}
+
+// Builds what the E key runs: the picker over the running selection, then the
+// new selection applied in place
 export function createEditMode(rt: Runtime, view: StatusView, report: DailyReport): () => Promise<void> {
-  // Handles edit mode for changing game selection while idling
   return async function enterEditMode(): Promise<void> {
     if (rt.isWaitingForResume) {
       showError('Edit disabled while waiting for resume');
       return;
     }
     rt.isInEditMode = true;
-
     view.stop();
-    // Steam keeps crediting while the selector is open (gamesPlayed stays set), so
-    // the clock keeps running from here; only a block has it frozen already.
+    // gamesPlayed stays set while the picker is open, so Steam keeps counting;
+    // bank up to now and let the clocks run on (a block has frozen them already)
     if (!rt.session.blocked) rt.session.bank();
-
     console.clear();
 
-    const currentSelection = rt.session.selection();
-    // Missing games are in currentSelection, so the picker lists them and an apply keeps them
-    const { selectedGames: newSelection, aborted } = await selectGames(rt.library.games, currentSelection, true);
+    // The running selection includes missing games, so the picker lists them
+    // and applying keeps them
+    const picked = await selectGames(rt.library.games, rt.session.selection(), true);
 
-    // Ctrl+C inside the selector: the idling-screen key handler already started
-    // the graceful shutdown; do not repaint over the goodbye message.
-    if (aborted || rt.isShuttingDown) {
+    // Ctrl+C in the picker: the shutdown has begun, and the screen belongs to the goodbye
+    if (picked.aborted || rt.isShuttingDown) {
       rt.isInEditMode = false;
       rt.actions.shutdown(0);
       return;
     }
 
-    if (newSelection.length === 0) {
-      showError('No games selected - keeping current selection');
+    if (picked.selectedGames.length > 0) {
+      installSelection(rt, (appids) => report.forget(appids), picked.selectedGames);
     } else {
-      installSelection(rt, (appids) => report.forget(appids), newSelection);
+      showError('No games selected - keeping current selection');
     }
 
-    // Always re-send on the way out, selection changed or not: an unblock that
-    // arrived while the selector was open deferred its re-send to here, and Steam
-    // does not restore a blocked session's list on its own.
-    if (!rt.isWaitingForResume) {
-      rt.client.setGamesPlaying(rt.session.idling.map((g) => g.appid));
-    }
+    // Send the list again even when nothing changed: an unblock during the
+    // picker left its re-send to this point, and Steam does not bring back a
+    // blocked session's games by itself
+    if (!rt.isWaitingForResume) rt.client.setGamesPlaying(rt.session.idling.map((g) => g.appid));
 
-    if (process.stdin.isTTY) {
-      readline.emitKeypressEvents(process.stdin);
-      process.stdin.setRawMode(true);
-      process.stdin.resume();
-    }
-
+    if (process.stdin.isTTY) takeKeyboard();
     rt.isInEditMode = false;
 
     if (!rt.idlingStartedAt) return;
     view.render();
-    // A disconnect that landed while the selector was open leaves us waiting:
-    // keep the clocks frozen and let restoreIdling restart the loop.
+    // A disconnect during the picker means we are waiting now: the clocks stay
+    // frozen and restoreIdling restarts the refresh loop when the session is back
     if (!rt.isWaitingForResume) view.start();
   };
 }
