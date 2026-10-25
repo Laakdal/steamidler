@@ -100,7 +100,7 @@ message regex for `LoggedInElsewhere`/`LogonSessionReplaced`
 |-------|---------|---------|
 | **A. Hard crash** | Uncatchable async throw — esp. `logOn` while already connected ("Already logged on"); or a synchronous `"Not logged in"` throw from `setGamesPlaying`/`stopPlaying` invoked while logged out. **No `process.on('uncaughtException'/'unhandledRejection')` handler exists.** | Process dies, non-zero. systemd `Restart=on-failure` would restart it. |
 | **B. Graceful give-up** | Resume retries exhausted (auth 15× or general 30×, each 60s apart), or no stored credentials at resume. | `handleShutdown()` → `exit(0)`. systemd will **not** restart (clean exit). Idling silently stops. |
-| **C. Startup failure** | Login fails, no games, no favorites (headless). | `exit(1)` via `main().catch` / explicit `process.exit(1)`. |
+| **C. Startup failure** | Login fails, no games selected (headless; this one is exit 2 now). | `exit(1)` via `main().catch` / explicit `process.exit(1)`. |
 | **D. Rate-limit escalation** | `RateLimitExceeded(84)` / `AccountLoginDeniedThrottle(87)` during resume → 30 retries × 60s = ~30 min of continuous login attempts → **escalates** the Steam cooldown (30 min → hours → up to 24 h). | Eventually class B, but self-inflicted: makes the lockout worse and can lock the account out of normal clients too. |
 
 Class **A** is the literal "kills the application" answer; class **B/D** stop
@@ -189,9 +189,7 @@ idling without a crash.
   guards. Ref commit `63357cf` ("random steam logon error after long continuous
   idling").
 - **"Not logged in"** — `setGamesPlaying`/`stopPlaying` (`src/steam/client.ts:246`)
-  called while `_isLoggedIn === false`. Reachable from `tickRandomizer`
-  (`index.ts:109`), `restoreIdling` (`index.ts:208`), `handlePlayingState`
-  (`index.ts:594/628`), none wrapped in try/catch.
+  called while `_isLoggedIn === false`. Reachable from `restoreIdling` (`src/steam/resume.ts`) and `handlePlayingState` (`src/start.ts`) (earlier versions also from the since-removed randomizer; the original `index.ts` line numbers predate the split), none wrapped in try/catch.
 - **Unhandled promise rejection** anywhere in the async resume path — there is no
   global `unhandledRejection`/`uncaughtException` handler, so any escaping
   rejection terminates the process.

@@ -4,6 +4,22 @@ Checks that need the real Steam account and Discord, so only the owner runs them
 
 Agents hand the owner the relevant checklist and never run these themselves (`AGENTS.md` §7).
 
+## Saved selection
+
+**Last passed:** not recorded.
+
+1. Update the VPS to this build. With the old `favorites-<account>.json` present and no selection file, the service starts and idles those games, and `selection-<account>.json` appears. (A favorites game that was missing from your library at that moment keeps a placeholder name `App <id>` in the file until the selection next changes.)
+2. `/add` a game, then restart the service: the game is still idling.
+3. Your Steam status, set in the Steam app, stays as you set it after a 4-hour relog.
+4. Hours on the Steam profile keep rising for 3+ hours, across one relog. (steamidler no longer sets the status Online; this checks that hours still count without it.)
+5. Edit the selection file to invalid JSON and restart: a `selection-<account>.json.invalid` file appears and the service falls back (to the favorites file, or exit 2 with "No games selected").
+6. Ctrl+C in interactive mode exits within a few seconds, and the status box turns red.
+7. On the idling screen, `E` opens the picker with the current selection ticked; Enter applies it and it is saved (restart to confirm). `Q` quits cleanly.
+8. Ctrl+C inside the picker (at start and in edit mode) exits cleanly instead of leaving the terminal in raw mode.
+9. The daily report arrives at local midnight and lists the games' playtime without any cooldown or exempt parts.
+10. Takeover: play a game on another device, then stop. The games pause and then idle again, with the paused and resumed notices.
+11. Quit (`Q` or Ctrl+C) while a reconnect login is in flight (cut the network, wait for the paused notice, restore it and quit straight away): the process exits within a few seconds.
+
 ## Discord bot
 
 **Last passed:** not recorded.

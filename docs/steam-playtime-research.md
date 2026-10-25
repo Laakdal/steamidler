@@ -3,6 +3,8 @@
 Research into how Steam tracks game playtime, how it commits/resets, how the
 `node-steam-user` JS SDK exposes it, and what this means for `steamidler`.
 
+> Note: the `src/index.ts` references below predate the split into modules. The code now lives in `src/start.ts`, `src/steam/resume.ts`, `src/steam/flush.ts` and `src/shutdown.ts`; the randomizer discussed in places has been removed.
+
 > Caveat: Steam does not publicly document the internal playtime-commit
 > protocol. Items marked **(lore)** come from community reports/forums, not
 > official Valve documentation, and should be treated as approximate.
@@ -253,7 +255,7 @@ whether a stop/start actually forces a server commit. relog is the safer bet.
 - Guards / false-positive avoidance:
   - Only act on a *successful* fetch showing no increase. Network/transient
     error → skip the round, keep baseline.
-  - If the probe app left the idling set (entered cooldown via `tickRandomizer`,
+  - If the probe app left the idling set (entered cooldown via the since-removed randomizer,
     or got paused by `handlePlayingState` because the user actually played) →
     re-baseline, skip.
   - Skip while `isWaitingForResume || isInEditMode || isShuttingDown`.
@@ -267,7 +269,7 @@ whether a stop/start actually forces a server commit. relog is the safer bet.
 - `src/index.ts`: 2 constants, 2 timers (`flushTimer`, `zombieTimer`) armed in
   `startIdling` / cleared in `handleShutdown`, a `selfInitiatedRelog`
   suppression flag, and zombie-baseline state. No changes to the core
-  reconnect/randomizer logic — both features ride on the existing
+  reconnect logic (the randomizer mentioned in the original has since been removed) — both features ride on the existing
   disconnect/loggedOn flow.
 
 ### Open assumptions to validate before/while implementing

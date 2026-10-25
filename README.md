@@ -38,7 +38,7 @@ The compiled CLI is `dist/index.js`. Releases are listed on the [Releases page](
 
 ```bash
 node dist/index.js                   # Interactive mode: log in, pick games, idle
-node dist/index.js --headless        # Log in with the saved token and idle your favorites
+node dist/index.js --headless        # Log in with the saved token and idle your saved games
 node dist/index.js --setup-discord   # (Re)configure the Discord bot and backup webhook
 node dist/index.js --logout          # Forget the saved Steam login
 node dist/index.js --version         # Print the version
@@ -47,7 +47,7 @@ node dist/index.js --help            # Show all options
 
 ### Interactive mode
 
-Choose a login method, select games in the selector, and press `Enter` to start idling. The login is saved, so later runs can reuse it.
+Choose a login method, select games in the selector, and press `Enter` to start idling. The login is saved, so later runs can reuse it. So is your selection: it is saved whenever it changes, and the selector opens with it ticked and listed first under "Selected".
 
 Game selector:
 
@@ -55,10 +55,8 @@ Game selector:
 |-----|--------|
 | `↑` `↓`, `PgUp` `PgDn`, `Home` `End` | Move through the list |
 | `Space` | Select or deselect a game |
-| `F` | Add or remove a favorite |
 | `T` | Filter by source: all, owned, free, family-shared |
 | `/` | Search by name (`Esc` clears) |
-| `S` | Start all favorites |
 | `Enter` | Start idling |
 | `Esc` | In edit mode, return to idling without changes |
 
@@ -72,7 +70,7 @@ While idling:
 
 ### Headless mode
 
-`--headless` logs in with the saved token and idles your favorites (the first 32 if there are more). Run the program interactively once first to log in and star your favorites.
+`--headless` logs in with the saved token and idles the saved selection (at most 32 games). Run the program interactively once first to log in and pick games with `Space`. After that, restarts and updates need no interactive run. A saved game that is missing from your library at start (a family-shared game, for example) is kept and checked again at the next start.
 
 A network error or Steam rate limit at startup keeps the saved login; only an expired or revoked token requires logging in again. Exit codes:
 
@@ -80,7 +78,7 @@ A network error or Steam rate limit at startup keeps the saved login; only an ex
 |------|---------|
 | `0` | Stopped cleanly |
 | `1` | Transient failure; restarting may help |
-| `2` | Configuration or account problem (no saved login, no favorites, expired or revoked token, banned account, protocol mismatch); restarting will not help |
+| `2` | Configuration or account problem (no saved login, no games selected, expired or revoked token, banned account, protocol mismatch); restarting will not help |
 
 ## How idling works
 
@@ -112,7 +110,7 @@ Setup posts a test message through the bot (and through the webhook, if given), 
 
 - **Only you.** Commands work only for the application's owner (for a team-owned application, the member picked at setup), and only in the chosen server. Anyone else gets "not allowed". Discord also hides the commands from members who are not server admins.
 - **Replies are private.** Only you see them.
-- **Changes last until steamidler restarts.** `/add` and `/remove` change the running session; your favorites stay as they are, so a restart idles your favorites again.
+- **Changes are saved.** `/add` and `/remove` change the saved selection, so the games are still idling after a restart.
 - **Limits:** at most 32 games, and at least one stays selected. A change is refused while the game selector is open on the computer, while steamidler is disconnected from Steam, and before idling has started.
 - The bot comes online when idling starts. Run one steamidler per bot token at a time: two copies would both answer every command.
 
@@ -162,10 +160,12 @@ All state is stored in `~/.steam-idler/`:
 ```
 ~/.steam-idler/
 ├── credentials.json          # Saved Steam login token
-├── favorites-<account>.json  # Favorites
+├── selection-<account>.json  # The selected games, saved on every change
 ├── discord.json              # Discord bot token, IDs, optional backup webhook
 └── discord-status.json       # Which message is the live status box (no secrets)
 ```
+
+An older `favorites-<account>.json` is read once, only when there is no `selection-<account>.json` yet, and its games become the starting selection; the file is then left alone. A selection file that cannot be read is renamed to `selection-<account>.json.invalid` and steamidler starts as if nothing were saved.
 
 `credentials.json` and `discord.json` contain secrets in plain text and are written with owner-only permissions on Linux. Do not share or commit them.
 
@@ -189,7 +189,7 @@ steamidler only makes outgoing connections (to Steam and Discord), so the server
    sudo useradd --system --create-home steamidler
    ```
 
-4. Run it interactively once as that user, over SSH: log in with the QR code shown in the terminal, accept the offer to set up Discord, star your favorites with `F`, start idling with `Enter`, then quit with `Q`.
+4. Run it interactively once as that user, over SSH: log in with the QR code shown in the terminal, accept the offer to set up Discord, pick your games with `Space`, start idling with `Enter`, then quit with `Q`. The selection is saved, so the service resumes it on every start.
 
    ```bash
    sudo -u steamidler -H node /opt/steamidler/dist/index.js

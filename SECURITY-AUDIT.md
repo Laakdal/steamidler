@@ -481,3 +481,38 @@ No new destination. The box uses `POST` and `PATCH` on `https://discord.com/api/
 | Independent whole-branch review | No critical findings. 2 important (a 400 such as code 50006 was silent; an edit refused with 403 never fell back to a post) and 3 minor ones upgraded by effect (unclipped waiting reason, emoji split by clipping, setup 403 naming no fix): all fixed, each with a test that failed first. 2 minor deferred: a deduped post at shutdown can leave the box green, and an unreadable success reply is read as a hidden box |
 
 **Not performed:** a real Discord channel and a live run. These are on the owner's checklist.
+
+## 18. Addendum — Saved selection, split index.ts, no forced status (2026-10-25)
+
+The selected games are now saved and restored on every start; favorites, the randomizer and the forced Online status are gone; `src/index.ts` is split into modules; the tests live in the repo with a GitHub Actions check. Design: `docs/superpowers/specs/2026-10-25-saved-selection-design.md`. Plan: `docs/superpowers/plans/2026-10-25-saved-selection.md`. Branch `saved-selection`. No new dependency; `pnpm-lock.yaml` is unchanged.
+
+### The selection file
+
+- `~/.steam-idler/selection-<account>.json` holds a version, a time and the selected games (appid and name). No secret. It is written with `writeFileAtomic(..., 0o600)` and a failed write is logged, never thrown.
+- **Validated on every load** (`src/storage/selection.ts`): an unreadable, non-JSON, non-object or unknown-version file is renamed to `selection-<account>.json.invalid` (replacing an older one) and treated as absent; single bad entries (appid not a positive integer, repeated) are dropped with a console line; more than 32 entries are cut to the first 32. A hand-edited file therefore cannot crash steamidler or push the selection past the cap.
+- The old `favorites-<account>.json` is read only when no selection file exists, its exempt field is ignored, and it is never written. A favorites game missing from the library at migration is saved with the placeholder name `App <id>` until the selection next changes.
+- Saved names come from an owner-editable file and are printed to the terminal as they are (local trust, the same as library names). Any text sent to Discord still goes through the existing escaping (`escapeMarkdown`, mentions disabled, embeds suppressed; code blocks in the status box).
+- `/add` and `/remove` now write this file. The guards (`busyReason`) and the 32-game cap are unchanged. The first failed write in a run sends one Discord notice.
+
+### Forced Online status (§6.1) resolved
+
+steamidler no longer calls `setPersona`, so the status the owner sets in the Steam app stands and an Invisible setting is no longer overridden. §6.1 recorded why the original author added the call (the account showed offline after a relog). Whether hours still count without it is **unverified**; it is item 4 of the "Saved selection" checklist in `docs/live-tests.md`.
+
+### CI workflow
+
+`.github/workflows/ci.yml` runs on GitHub, not in steamidler, so the app gains no outbound destination.
+
+- Actions pinned by commit: `actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683` (v4.2.2) and `actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020` (v4.4.0).
+- `permissions: contents: read`, `persist-credentials: false`, no secrets.
+- Install with `npx pnpm@10.34.6 install --frozen-lockfile --ignore-scripts`, then the offline test suite (`fetch` mocked, a fake Steam client).
+
+### Validation
+
+| Check | Outcome |
+|---|---|
+| `pnpm build` (`tsc`, strict) | Passed, 0 errors |
+| Offline tests (`npx pnpm@10.34.6 test`) | 253/253 passed |
+| `pnpm-lock.yaml` | Unchanged |
+| Grep for `favorite`, `exempt`, `cooldown`, `randomizer`, `setPersona` | Only the migration code and its tests, `CHANGELOG.md`, older specs and plans, and the history sections of this file remain |
+
+**Not performed:** a live run against Steam and Discord. The "Saved selection" checklist in `docs/live-tests.md` is the owner's.

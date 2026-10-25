@@ -10,7 +10,7 @@ The commands below assume the README's setup: the service `steamidler`, the code
 journalctl -u steamidler -f              # Follow the log
 journalctl -u steamidler -n 200          # The last 200 lines
 systemctl status steamidler              # Running or not, and the last exit status
-sudo systemctl restart steamidler        # Restart (Discord /add and /remove changes reset to your favorites)
+sudo systemctl restart steamidler        # Restart (the saved game selection comes back)
 sudo systemctl stop steamidler           # Stop; "🛑 Idling stopped" is posted to Discord
 ```
 
@@ -24,7 +24,7 @@ Needed after a dead token, a `--logout`, or a leaked token.
    sudo systemctl stop steamidler
    ```
 
-2. Run it interactively as the service user over SSH: log in with the QR code, check your favorites (star with `F`), start idling with `Enter`, then quit with `Q`:
+2. Run it interactively as the service user over SSH: log in with the QR code, pick your games (`Space`), start idling with `Enter`, then quit with `Q`:
 
    ```bash
    sudo -u steamidler -H node /opt/steamidler/dist/index.js
@@ -39,7 +39,8 @@ Find the matching row by what Discord said and what `systemctl status steamidler
 | Discord says | Exit status | Cause | Fix |
 |---|---|---|---|
 | 🛑 Headless start failed — No stored login found… | 2 | No saved Steam login: never logged in, `--logout`, or a dead token was cleared | [Log in to Steam again](#log-in-to-steam-again) |
-| 🛑 Headless start failed — No favorites configured… or No matching games found for your favorites. | 2 | No starred games, or none of them are in the library any more | Run it interactively as the service user (step 2 above), star games with `F`, quit, start the service |
+| 🛑 Headless start failed — No games selected. Run steamidler interactively once to pick games. | 2 | No saved selection (a fresh install, or the selection file was unreadable and set aside as `selection-<account>.json.invalid`) | Run it interactively as the service user (step 2 above), pick games with `Space`, quit, start the service |
+| 🛑 Headless start failed — None of your N saved games are in your library. | 2 | The library is fully loaded and holds none of the saved games. The file is left untouched | Check the account is the right one. Or run it interactively, pick games, quit, start the service |
 | 🛑 Headless start failed — *a Steam error* | 2 | Expired or revoked token, a banned or locked account, or a protocol mismatch (exit status 1 instead means a passing error: systemd retries on its own) | For a token: [log in again](#log-in-to-steam-again). For an account problem: check the account on the Steam website first. For a protocol mismatch: [update](#update-to-a-new-release) |
 | 🛑 Idling stopped — *a Steam error*. Manual re-login required. | 0 | The running session hit an error retrying cannot fix. A dead token is cleared, so the next start fails with "No stored login found" | Same as the row above. The service exits cleanly here, so systemd does not restart it |
 | 🛑 Idling stopped — failed to reconnect after 30× … | 1 | A long Steam or network outage | Nothing: systemd restarts it after 10 s. Check the log if it keeps happening |

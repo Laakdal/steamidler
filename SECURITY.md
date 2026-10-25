@@ -13,7 +13,7 @@ Report it privately through GitHub: the repository's **Security** tab, then **Re
 ## Security model in brief
 
 - **Secrets** live in plain text in `~/.steam-idler/`: the Steam refresh token in `credentials.json`, and the Discord bot token and backup webhook URL in `discord.json`. On Linux they are written owner-only (`0600`); on Windows that has no effect. If one leaks, follow [A secret leaked](docs/runbook.md#a-secret-leaked) in the runbook.
-- **Who can control it:** only the Discord user configured as owner, in the configured server. `/add` and `/remove` change the running session only, never your favorites.
+- **Who can control it:** only the Discord user configured as owner, in the configured server. `/add` and `/remove` change the saved game selection, nothing else.
 - **Where it connects:** only Steam and Discord. No server or open port on your machine.
 - **Discord is optional:** a Discord failure never stops idling or delays shutdown.
 - **Dependencies** are reviewed, at least 14 days old, and installed from the lockfile with install scripts disabled.
