@@ -246,24 +246,7 @@ steamidler only makes outgoing connections (to Steam and Discord), so the server
    sudo systemctl enable --now steamidler
    ```
 
-Useful commands:
-
-```bash
-journalctl -u steamidler -f          # Follow the log
-sudo systemctl restart steamidler    # Restart (Discord changes reset to your favorites)
-sudo systemctl stop steamidler       # Stop; "🛑 Idling stopped" is posted to Discord
-```
-
-To update, check [CHANGELOG.md](CHANGELOG.md) for the new release, then switch to its tag (`v0.2.0` below is an example), rebuild and restart:
-
-```bash
-cd /opt/steamidler
-sudo git fetch --tags
-sudo git checkout v0.2.0
-sudo npx pnpm@10.34.6 install --frozen-lockfile --ignore-scripts
-sudo npx pnpm@10.34.6 build
-sudo systemctl restart steamidler
-```
+Everyday commands, updating, rolling back, and what to do when it stops or a secret leaks are in the [runbook](docs/runbook.md).
 
 This unit file has not yet been tested on a live server.
 

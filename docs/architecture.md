@@ -27,7 +27,7 @@ src/
   notifications/dailyReport.ts  midnight report text
   ui/                       selector, status table, prompts, spinner
   types/                    shared types and hand-written module declarations (modules.d.ts)
-docs/                       project docs (this file, development, status, roadmap), Steam research notes;
+docs/                       project docs (this file, development, runbook, live-tests, status, roadmap), Steam research notes;
                             designs in docs/superpowers/specs, plans in docs/superpowers/plans
 ```
 

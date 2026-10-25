@@ -7,7 +7,7 @@ Update this file when an item is confirmed, done or dropped. Finished work moves
 ## Next (unconfirmed)
 
 - **Release v0.2.0** with the live status box: a CHANGELOG entry, the `package.json` version, and the tag.
-- **Live-test** the bot, the status box and the systemd unit on the VPS (see [status.md](status.md)).
+- **Live-test** the bot, the status box and the systemd unit on the VPS (checklists in [live-tests.md](live-tests.md)).
 - **Validate the playtime assumptions** in [docs/steam-playtime-research.md](steam-playtime-research.md) §10, "Open assumptions": that a relog commits the in-flight playtime, that `relog()` works after a refresh-token logon, and that `playtime_forever` moves visibly within a 90-minute window.
 
 ## Not planned

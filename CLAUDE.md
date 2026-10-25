@@ -12,10 +12,12 @@ Read a doc when its trigger applies. Update it in the same change as what it des
 
 | Doc | Read when | Update when |
 |---|---|---|
-| [docs/status.md](docs/status.md) | starting a session or picking up work: what is released, unreleased, untested | a feature lands on `main`, a release is tagged, a live test runs |
+| [docs/status.md](docs/status.md) | starting a session or picking up work: what is released and unreleased | a feature lands on `main`, or a release is tagged |
 | [docs/roadmap.md](docs/roadmap.md) | choosing what to build next, or judging whether a request is in scope | an item is confirmed, done or dropped |
 | [docs/architecture.md](docs/architecture.md) | finding where code lives, or changing the idling state model | a source file is added, moved or removed; the state model changes |
 | [docs/development.md](docs/development.md) | building, writing offline tests, adding a dependency, branching or releasing | a command, the test harness or the release flow changes |
+| [docs/runbook.md](docs/runbook.md) | the service stops or misbehaves, updating or rolling back, a secret leaks | an exit path, a Discord message, the systemd unit or the update steps change |
+| [docs/live-tests.md](docs/live-tests.md) | handing the user a live checklist, or preparing a release | a feature needing a live test lands, or the user reports a result |
 | [SECURITY.md](SECURITY.md) | explaining the security model, or a vulnerability report arrives | the security model or reporting route changes |
 | [SECURITY-AUDIT.md](SECURITY-AUDIT.md) | changing secrets, validation, network destinations or dependencies | any of those change, as a dated addendum section |
 | [CHANGELOG.md](CHANGELOG.md) | preparing a release | a release is tagged, from `git log` since the last tag |
@@ -85,4 +87,4 @@ Report plainly: what changed, what was verified and how, what was not run, and t
 | Bot client (`bot.ts`) | As above with discord.js replaced by a fake: Gateway events, login failures and retries, interactions, destroy |
 | Idling state machine, timers, Steam session | Scripted checks of every guard path reachable offline, plus a live checklist for the user |
 
-Offline tests use the harness in [docs/development.md](docs/development.md#offline-test-harness). Live tests are the user's to run: hand over a short checklist.
+Offline tests use the harness in [docs/development.md](docs/development.md#offline-test-harness). Live tests are the user's to run: hand over the matching checklist from [docs/live-tests.md](docs/live-tests.md), adding one there for a new feature.
