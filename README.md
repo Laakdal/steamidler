@@ -275,7 +275,7 @@ npx pnpm@10.34.6 build    # Type-check and compile to dist/
 npm run dev               # Build, then start interactive mode
 ```
 
-The project is TypeScript (ES modules, strict mode) with no test suite; a successful build is the only automated check. Conventions and project rules are in [AGENTS.md](AGENTS.md), and the dependency and security review is in [SECURITY-AUDIT.md](SECURITY-AUDIT.md). Background notes on Steam behavior are in [docs/](docs/).
+The project is TypeScript (ES modules, strict mode) with no test suite; a successful build is the only automated check. How the code is laid out is in [docs/architecture.md](docs/architecture.md), how to build, test and release in [docs/development.md](docs/development.md), and project rules in [AGENTS.md](AGENTS.md). [docs/status.md](docs/status.md) and [docs/roadmap.md](docs/roadmap.md) say where the project stands and what may come next. Security: [SECURITY.md](SECURITY.md) for the overview and reporting, [SECURITY-AUDIT.md](SECURITY-AUDIT.md) for the full audit. Background notes on Steam behavior are in [docs/](docs/).
 
 ## Disclaimer
 

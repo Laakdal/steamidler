@@ -1,6 +1,6 @@
 # AGENTS.md: steamidler
 
-This file applies to every AI agent and human contributor working in this repository. It holds the hard rules. How to work day to day (changing code safely, quality gates, review, testing, docs) is in **`CLAUDE.md`**. Every agent reads both; if they conflict, **AGENTS.md takes precedence**.
+This file applies to every AI agent and human contributor working in this repository. It holds the hard rules. **`CLAUDE.md`** indexes the other docs and covers how to work day to day (changing code safely, quality gates, review, testing). Every agent reads both; if they conflict, **AGENTS.md takes precedence**.
 
 When a doc disagrees with the code, trust the code, and fix the doc in the same change.
 
@@ -14,35 +14,11 @@ It started as a fork of `louisraetz/steamidled` v1.2.0 (commit `9f2b1ab`) and no
 - Docker support removed; systemd is the only documented way to run it as a service.
 - `SECURITY-AUDIT.md` records the audit of v1.2.0 and every security-relevant change since (§13 onward).
 
-Work happens on feature branches off `main`. Releases are `vX.Y.Z` tags on `main`, matching `package.json`, with notes in `CHANGELOG.md` and on the GitHub Releases page.
+Branches, releases and builds are in `docs/development.md`; what is released and what is not is in `docs/status.md`.
 
 ## 2. Project layout
 
-```
-src/
-  index.ts                  entry point and orchestrator: CLI flags, login, idling state machine, timers, shutdown,
-                            and the controlPanel the Discord bot acts through
-  selection.ts              computeSelection: the selection diff shared by the E selector and Discord commands
-  constants.ts              MAX_IDLE_GAMES (32), IS_HEADLESS
-  steam/client.ts           SteamClient wrapper around steam-user (gamesPlayed, events, reconnect tracking)
-  steam/auth.ts             QR / credentials / stored-token login (steam-session)
-  storage/                  ~/.steam-idler files: credentials, favorites, atomic writes
-  discord/config.ts         discord.json load (validated every time) and save
-  discord/format.ts         markdown escaping and 2000-character splitting
-  discord/rest.ts           REST calls through fetch: channel posts, webhook posts, status box post/edit, command registration
-  discord/notifier.ts       DiscordNotifier: bot first, webhook fallback, offline/online notices
-  discord/setup.ts          --setup-discord flow
-  discord/commands.ts       pure /add /remove /status logic and the owner check
-  discord/health.ts         GatewayHealth: 2 min offline grace, fatal close codes
-  discord/bot.ts            discord.js Gateway client that answers the commands
-  discord/statusEmbed.ts    pure builder for the live status box embed (layout, size limits)
-  discord/statusPanel.ts    StatusPanel: keeps the status box current (60 s timer, nudges, final red edit)
-  discord/statusStore.ts    discord-status.json: which message is the status box (validated on load)
-  notifications/dailyReport.ts  midnight report text
-  ui/                       selector, status table, prompts, spinner
-  types/                    shared types and hand-written module declarations (modules.d.ts)
-docs/                       Steam research notes; designs in docs/superpowers/specs, plans in docs/superpowers/plans
-```
+The source layout, module by module, and how the idling state model works are in **`docs/architecture.md`**.
 
 ## 3. Code conventions
 
@@ -64,13 +40,7 @@ docs/                       Steam research notes; designs in docs/superpowers/sp
 
 ## 5. Idling state model (`src/index.ts`)
 
-Each selected game is an `IdlingGame` in exactly one of three arrays:
-
-- `idlingGames`: currently sent to Steam via `client.setGamesPlaying(...)`.
-- `pausingGames`: in randomizer cooldown (`pauseUntil` set).
-- `pausedGames`: frozen because another device is playing that game (`playingBlocked`).
-
-Playtime bookkeeping: `accumulatedMs` plus the live delta since `startTime`. `bankElapsed()` folds the delta in and is idempotent, so overlapping freeze paths cannot double-count. `nextPauseAtMs === null` marks the exempt game (no cooldowns).
+Each selected game is an `IdlingGame` in exactly one of three arrays, `idlingGames`, `pausingGames` or `pausedGames`, with its playtime banked by `bankElapsed()`; `docs/architecture.md` explains the model.
 
 Guards that every code path changing the selection respects:
 
@@ -105,7 +75,7 @@ The project was audited before first use; keep it auditable.
 
 `CLAUDE.md` covers:
 
-- the task table and the safe-change procedure;
+- the docs index: which doc to read when, and which doc to update;
+- the safe-change procedure;
 - the quality gates and the review at four zooms;
-- how much to test, and the offline test harness;
-- which doc to read when, and which doc to update.
+- how much to test.
