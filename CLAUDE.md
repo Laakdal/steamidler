@@ -31,8 +31,8 @@ Read a doc when its trigger applies. Update it in the same change as what it des
 ## 2. Change safely
 
 - **Start from a clean tree** on the feature branch, so `git diff` shows exactly your change. Commit the previous task first if it is done and approved.
-- **Read before changing.** `src/index.ts` is a long state machine; most "simple" changes touch a guard (`isWaitingForResume`, `isInEditMode`, `playingBlocked`, `isShuttingDown`).
-- **Reuse.** Extract and share existing logic (as `computeSelection` and `BOT_DOWN_REASONS` are shared) rather than writing a second copy. Untouched paths keep their behavior.
+- **Read before changing.** `src/index.ts` is a long state machine; most "simple" changes touch a guard (`rt.isWaitingForResume`, `rt.isInEditMode`, `session.blocked`, `rt.isShuttingDown`).
+- **Reuse.** Extract and share existing logic (as `Session.apply` through `installSelection` and `BOT_DOWN_REASONS` are shared) rather than writing a second copy. Untouched paths keep their behavior.
 - **Library behavior:** when a design depends on what discord.js, steam-user or steam-session do, check their source in `node_modules` rather than assuming. (A failed `Client.login()` destroys that client for good, which shaped `bot.ts`.)
 - **Designs first:** anything non-trivial gets a spec in `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` before code. Say what you plan to change from an approved plan, and why, before doing it.
 - **Unfamiliar tools:** say what a script or build tool does before running it.
@@ -61,7 +61,7 @@ Review each change as you make it, scaled to its size:
   - relative imports end in `.js`.
 - **Function:**
   - which guards apply (`AGENTS.md` §5), and is each one respected;
-  - is it safe to run twice (a reconnect, a repeated event, a re-run setup)? `bankElapsed` is the model;
+  - is it safe to run twice (a reconnect, a repeated event, a re-run setup)? `session.bank()` (idempotent) is the model;
   - can a missing, malformed or hand-edited config value break it;
   - does anything a shutdown path awaits reject or hang.
 - **File:**

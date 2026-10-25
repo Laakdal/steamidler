@@ -36,21 +36,21 @@ The source layout, module by module, and how the idling state model works are in
 - **Steam logons back off.** Rate-limit EResults wait at least ~30 min; terminal EResults stop instead of retrying.
 - **Shutdown always reaches `process.exit`.** Shutdown and crash paths `await Promise.all([grace, discord.send(...), statusPanel.stop()])`, then `stopBot()` (capped at 1 s). So `DiscordNotifier.send()` never rejects and is time-bounded (4 s bot + 4 s webhook per part), `StatusPanel.stop()` never rejects and resolves within 4 s, and `BotHandle.destroy()` never rejects.
 - **Discord stays optional.** A Discord failure is logged and never stops idling, changes an exit code, or delays shutdown. Every promise in our Discord code has a catch: `unhandledRejection` goes to `handleRejection`, which ignores only rejections raised inside the Discord libraries (`isDiscordLibraryError`) and sends everything else to `handleCrash`.
-- **The bot acts only through `controlPanel`.** Its guards (`busyReason`) and `computeSelection` apply every remote change; `/add` and `/remove` change the running session only and never write favorites. The bot is started only from `startIdling`, so a `--setup-discord` run or an unstarted session never answers commands.
+- **The bot acts only through `controlPanel`.** Its guards (`busyReason`) and `installSelection` (`Session.apply`) apply every remote change; `/add` and `/remove` change the running session only and never write favorites. The bot is started only from `startIdling`, so a `--setup-discord` run or an unstarted session never answers commands.
 
-## 5. Idling state model (`src/index.ts`)
+## 5. Idling state model (`src/session.ts`, driven from `src/index.ts`)
 
-Each selected game is an `IdlingGame` in exactly one of two arrays, `idlingGames` or `pausedGames`, with its playtime banked by `bankElapsed()`; `docs/architecture.md` explains the model.
+Each selected game is an `IdlingGame` in exactly one of two arrays, `session.idling` or `session.paused`, with its playtime banked by `session.bank()`; `docs/architecture.md` explains the model.
 
 Guards that every code path changing the selection respects:
 
-- `isWaitingForResume`: disconnected or kicked; clocks frozen, `restoreIdling()` re-sends the list.
-- `isInEditMode`: the TTY selector is open and overwrites the selection when it closes.
-- `playingBlocked`: Steam ignores `gamesPlayed` while another session plays; re-send after unblock.
-- `isShuttingDown`: nothing repaints or changes state.
-- `startTime === null`: idling has not started yet.
+- `rt.isWaitingForResume`: disconnected or kicked; clocks frozen, `restoreIdling()` re-sends the list.
+- `rt.isInEditMode`: the TTY selector is open and overwrites the selection when it closes.
+- `session.blocked`: Steam ignores `gamesPlayed` while another session plays; re-send after unblock.
+- `rt.isShuttingDown`: nothing repaints or changes state.
+- `rt.idlingStartedAt === null`: idling has not started yet.
 
-After changing the arrays: re-send `client.setGamesPlaying(idlingGames.map((g) => g.appid))` unless waiting for resume, then `renderStatus()`. Steam does not restore a list on its own after a block or reconnect.
+After changing the arrays: re-send `rt.client.setGamesPlaying(rt.session.idling.map((g) => g.appid))` unless waiting for resume, then `renderStatus()`. Steam does not restore a list on its own after a block or reconnect.
 
 ## 6. Security rules
 
