@@ -13,7 +13,7 @@ src/
   session.ts                Session: the idling and paused games, banking, applying a selection, block and unblock
   timers.ts                 Timers: every timer by name, so shutdown clears them all in one call
   selection.ts              installSelection: applies a selection for the E selector and Discord commands alike
-  shutdown.ts               createShutdown: the shutdown, crash and unhandled-rejection paths, each ending in rt.exit
+  shutdown.ts               createShutdown: the shutdown, crash and unhandled-rejection paths; shutdown and crash end in rt.exit
   constants.ts              MAX_IDLE_GAMES (32), IS_HEADLESS
   steam/client.ts           SteamClient wrapper around steam-user (gamesPlayed, events, reconnect tracking)
   steam/auth.ts             QR / credentials / stored-token login (steam-session)

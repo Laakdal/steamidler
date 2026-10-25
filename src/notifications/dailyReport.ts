@@ -2,6 +2,7 @@ import type { IdlingGame } from '../types/index.js';
 import type { Runtime } from '../runtime.js';
 import { isFrozen } from '../runtime.js';
 
+// Delay until the next local midnight, so the report lands at the day boundary
 function msUntilNextMidnight(): number {
   const next = new Date();
   next.setDate(next.getDate() + 1);
@@ -23,6 +24,8 @@ export class DailyReport {
     this.scheduleDailyReport();
   }
 
+  // Arms the one-shot midnight timer; each firing sends the report, takes the
+  // new day's baseline and re-arms itself for the next midnight
   private scheduleDailyReport(): void {
     const rt = this.rt;
     rt.timers.timeout('midnight', () => {

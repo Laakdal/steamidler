@@ -15,8 +15,9 @@ export function discordSecrets(rt: Runtime): string[] {
   return token ? [token] : [];
 }
 
-// The shutdown, crash and unhandled-rejection paths. Every one ends in rt.exit,
-// so tests can stub the exit.
+// The shutdown, crash and unhandled-rejection paths. Shutdown and crash end in
+// rt.exit, so tests can stub the exit; a rejection from inside the Discord
+// libraries is logged and does not exit.
 export function createShutdown(rt: Runtime): {
   handleShutdown(exitCode?: number): void;
   handleCrash(err: unknown): void;
@@ -54,7 +55,7 @@ export function createShutdown(rt: Runtime): {
 
     showGoodbye();
     // Grace so the clean logOff socket write (the playtime-commit trigger) can
-    // land, and the final Discord post (own 5s timeout) gets to finish.
+    // land, and the final Discord post (4 s bot + 4 s webhook per part) gets to finish.
     const grace = new Promise((resolve) => setTimeout(resolve, SHUTDOWN_FLUSH_GRACE_MS));
     void Promise.all([grace, finalMessage, panelStopped])
       .then(() => stopBot())
@@ -62,7 +63,7 @@ export function createShutdown(rt: Runtime): {
   }
 
   // Closes the Gateway after the final notification went out. Never rejects and
-  // is time-capped, so both exit paths always reach process.exit.
+  // is time-capped, so both exit paths always reach rt.exit.
   function stopBot(): Promise<void> {
     if (!rt.botHandle) return Promise.resolve();
     const cap = new Promise<void>((resolve) => setTimeout(resolve, BOT_DESTROY_TIMEOUT_MS));
