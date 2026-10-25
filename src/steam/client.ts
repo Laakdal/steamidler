@@ -58,11 +58,8 @@ export class SteamClient {
     this.client.on('loggedOn', () => {
       this._isLoggedIn = true;
       this._reconnectPending = false;
-      // Persona resets to Offline on every fresh session — including relog and
-      // steam-user's silent autoRelogin, both of which bypass
-      // loginWithRefreshToken. Re-assert Online here so a flush relog never
-      // leaves the account invisible/offline.
-      this.client.setPersona(SteamUser.EPersonaState.Online);
+      // The Steam status (online, away, invisible) is left to the owner's own
+      // Steam app; the idler only sets the games being played, never the persona.
       void this.renewRefreshToken();
     });
 
