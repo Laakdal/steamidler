@@ -1,4 +1,4 @@
-# Saved selection, without favorites, randomizer or forced status: design
+# Saved selection, a split `index.ts`, and no favorites, randomizer or forced status: design
 
 Date: 2026-10-25. Branch: `saved-selection`, off `dev` (same commit as `main`, `cb7b5d4`).
 
@@ -25,7 +25,7 @@ While talking it through, the owner also decided to drop three things they don't
 - **Randomizer removed:** idle phases, cooldowns, the exempt game and the `X` key, and every place that shows them (terminal table, status box, `/status`, daily report, started message).
 - **Status left alone:** steamidler no longer calls `setPersona`, so the status the owner sets in the Steam app stands.
 - **One-time migration:** if there is no saved selection yet but a `favorites-<account>.json` exists, its games (first 32) become the starting selection. Its exempt field is ignored. The old file is then never read again and is left on disk.
-- **The session logic moves out of `src/index.ts`** into its own module, testable offline (see "Code layout").
+- **`src/index.ts` is split up completely** (the owner's choice): every concern moves to its own module, `index.ts` only wires them together, and the parts that today can only be checked live (reconnect, flush relog, zombie check, shutdown) become testable offline against a fake Steam client (see "Code layout").
 - **Offline tests move into the repo** with a GitHub check (see "Tests in the repo").
 
 ## Non-goals
@@ -33,7 +33,8 @@ While talking it through, the owner also decided to drop three things they don't
 - The daily report's "today" totals still reset on a restart.
 - No sync between machines, no named profiles or multiple lists.
 - Hand-editing the save file is tolerated (it is validated) but not a supported way to configure steamidler, and is not documented as one.
-- No other refactoring of `index.ts`: reconnect and backoff, the flush relog, the zombie check, notifications, the keyboard and shutdown stay where they are.
+- The split changes where code lives, not what it does: reconnect and backoff, takeovers, the flush relog, the zombie check, notification texts and timing, the keyboard and shutdown behave exactly as today. Fixing something found along the way is a separate, named change, not part of a move.
+- `src/steam/client.ts`, `src/steam/auth.ts` and the Discord modules keep their current shape, apart from the changes listed here.
 - No settings file. With the randomizer and the forced status gone, nothing is left to configure.
 - The "paused while you play it elsewhere" state stays exactly as it is: Steam blocks the whole session then, and that is not the randomizer.
 
@@ -43,7 +44,8 @@ While talking it through, the owner also decided to drop three things they don't
 - A saved game disappears from the list without the owner removing it.
 - Saving blocks idling, delays shutdown past today's budget, or throws.
 - `/add` or the picker can push the saved list past 32 games.
-- Behaviour changes for anything not listed here: reconnects, takeovers, the flush relog, the zombie check, Discord notifications other than the wording changes listed below.
+- Behaviour changes for anything not listed here: reconnects, takeovers, the flush relog, the zombie check, Discord notifications other than the wording changes listed below. The split in particular must be invisible to the owner.
+- The split ends with the same tangle in more files: modules reaching into each other's variables, or import cycles.
 
 ## Behaviour
 
@@ -112,13 +114,40 @@ Edit mode (`E` while idling) behaves as today, plus a save on apply.
 
 `/add` and `/remove` change the saved selection. The `/status` footer line "Changes made here last until steamidler restarts; favorites are unchanged." becomes "Changes are saved and kept after a restart." The 32-game cap and the guards (`busyReason`) are unchanged.
 
-## Code layout (the owner's choice: move the session out of `index.ts`)
+## Code layout (the owner's choice: split `index.ts` completely)
 
-- **`src/session.ts`** (new): owns the selected games and their state: idling and paused games, the saved games missing from the library, playtime banking (`bankElapsed`), applying a new selection, block and unblock (moving games to and from paused), and converting to and from the saved form. It imports nothing from Steam or Discord. Time is injectable, so every rule above can be tested offline. `src/selection.ts` (`computeSelection`) shrinks with the randomizer gone, and may fold into it.
-- **`src/storage/selection.ts`** (new): load, validate and save the file, and read the legacy favorites file for migration. Never throws.
-- **`src/index.ts`** keeps the Steam connection, the guards (`isWaitingForResume`, `isInEditMode`, `isShuttingDown`, `startTime`), timers, rendering, Discord and shutdown. It calls the session for every state change, then re-sends `setGamesPlaying` and renders as today. Whether `playingBlocked` lives in the session or in `index.ts` is the builder's call, as long as the guard rules in `AGENTS.md` §5 still read true.
-- **`src/storage/favorites.ts`** shrinks to the read-only migration loader, or folds into `storage/selection.ts`.
-- **`src/ui/gameSelector.ts`** loses favorites and exempt; it takes the saved selection as its preselection.
+Today `src/index.ts` is 1,525 lines with about 45 module-level variables; every concern reads and writes them directly. After the change:
+
+| Module | Owns (moved from `index.ts` unless marked new) |
+|---|---|
+| `src/index.ts` | Only wiring: create the shared context and the modules, register signal and process handlers, call `main`. Short enough to read in one screen. |
+| `src/runtime.ts` (new) | The shared context: the Steam client, the notifier, the session, and the guard flags (`isShuttingDown`, `isWaitingForResume` and its reason, `isInEditMode`, `playingBlocked`, `startTime`, `selfInitiatedRelog`, `stopNotified`). One object passed to every module, so no module keeps its own copy of a flag. |
+| `src/session.ts` (new) | The selected games and their state: idling and paused games, saved games missing from the library, playtime banking (`bankElapsed`), applying a new selection, block and unblock, converting to and from the saved form. Imports nothing from Steam or Discord; time is injectable. `src/selection.ts` (`computeSelection`) shrinks with the randomizer gone, and may fold into it. |
+| `src/storage/selection.ts` (new) | Load, validate and save the selection file; read the legacy favorites file for migration. Never throws. `src/storage/favorites.ts` shrinks to that loader or folds into it. |
+| `src/cli.ts` | Flags, `--help`, `--version`, `--logout`, `--setup-discord`, and the choice between headless and interactive. |
+| `src/start.ts` | Headless start (stored login with the rate-limit wait, `failHeadless`, exit codes), interactive start (login loop, Discord setup offer, picker), library fetch, and `startIdling` (registering the Steam event handlers, starting the timers, the bot and the status box). |
+| `src/steam/resume.ts` | The waiting state and getting back: `enterWaitingState`, `attemptResume` with its backoff and give-up rules, `restoreIdling`, the debounced paused/resumed notices, takeover drift reporting. |
+| `src/steam/flush.ts` | The 4-hour flush relog and the zombie check, with their state (baseline, strikes, unprobeable apps). |
+| `src/ui/keyboard.ts` | Raw-mode keys on the idling screen (`E`, `Q`, Ctrl+C) and edit mode. |
+| `src/ui/statusView.ts` | `renderStatus` and the 60 s display loop. |
+| `src/discord/controlPanel.ts` | The `controlPanel` the bot acts through, and the status box's `statusSnapshot`. |
+| `src/notifications/dailyReport.ts` | Gains the midnight scheduling and day-start snapshot next to the existing formatter. |
+| `src/shutdown.ts` | `handleShutdown`, `handleCrash`, `handleRejection`, `stopBot`, and the secret list for redaction. |
+
+The names and the exact cut are the builder's, as long as each module owns one concern from the table. Rules for the split:
+
+- **No import cycles.** A module that needs to trigger another's action (resume calling shutdown on a terminal error, for example) gets it through the context or a callback passed in at wiring time, not by importing it.
+- **Every timer has an owner** that clears it on shutdown. Shutdown still clears every timer before logging off, as today; the timer list is not spread across modules where one can be missed.
+- **The Steam client is passed in, not created inside a module,** so offline tests can hand in a fake with the same surface (`isConnected`, `isConnecting`, `isReconnecting`, `loginWithRefreshToken`, `relog`, `setGamesPlaying`, `getPlaytimeForever`, the event registrations).
+- **Behaviour-preserving moves land as their own commits,** separate from the commits that remove the randomizer, the favorites or the forced status, or add the saved selection. A reviewer can then check a move by diffing moved code, and a feature change by its own diff. The order of those steps is the builder's call; the suite is green after each.
+- `src/ui/gameSelector.ts` loses favorites and exempt; it takes the saved selection as its preselection.
+
+### What the split makes testable offline (new tests, with a fake Steam client and mocked `fetch`)
+
+- **Resume:** a disconnect enters waiting and freezes the clocks; steam-user's own reconnect restores idling without a second logon; terminal EResults stop with the right message and exit code; rate limits wait at least 10 minutes and give up after 10 tries; transient errors back off and give up after 30; a takeover retries every 5 minutes; paused and resumed notices are debounced as today.
+- **Flush and zombie:** the flush relog fires only when idle and connected; the zombie check's two strikes; a block resets the baseline.
+- **Shutdown and crash:** always reach `process.exit` (stubbed) within the budget, even when Discord hangs or the bot's destroy never settles; every timer is cleared; a crash before idling started sends the right message.
+- **Edit mode and `/add`/`/remove`** respect the guards in `AGENTS.md` §5.
 
 ## Tests in the repo
 
@@ -129,7 +158,7 @@ Edit mode (`E` while idling) behaves as today, plus a save on apply.
 ## Constraints
 
 - `AGENTS.md` §4 invariants hold: exit codes (no saved selection = 2, incomplete library = 1), the 32-game cap, shutdown always reaches `process.exit` within today's budget, Discord stays optional.
-- `AGENTS.md` §4 "`/add` and `/remove` change the running session only and never write favorites" becomes "`/add` and `/remove` change the saved selection"; §5's state model loses the cooldown array and points to `src/session.ts`. Both in the same change.
+- `AGENTS.md` §4 "`/add` and `/remove` change the running session only and never write favorites" becomes "`/add` and `/remove` change the saved selection"; §5's state model loses the cooldown array and points to `src/session.ts`, and its guard list says which module owns each guard. §4's shutdown invariant names the module that now holds it. All in the same change, with `docs/architecture.md`'s module table.
 - No new dependency. No new network destination (GitHub Actions runs on GitHub, not in steamidler).
 - TypeScript strict with the stricter flags; CRLF; tests per `CLAUDE.md` §5 (the session module counts as "idling state machine": scripted offline checks of every rule, plus a live checklist).
 
