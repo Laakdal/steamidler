@@ -92,7 +92,7 @@ test('runAdd success calls add(appid)', () => {
 
 test('runRemove refuses the last game', () => {
   const p = fake({ selection: [sel(1, 'Game 01')] });
-  assert.equal(m.runRemove(p, '1'), 'Game 01 is the only game left — steamidler needs at least one.');
+  assert.equal(m.runRemove(p, '1'), 'Game 01 is the only game left in your library — steamidler needs at least one.');
   assert.deepEqual(p.calls.remove, []);
 });
 
@@ -174,7 +174,7 @@ test('add and remove replies no longer say until restart', () => {
 
 test('removing the last game in the library is refused, a missing one is allowed', () => {
   const p = fake({ selection: [sel(1, 'Only'), sel(90, 'Gone', { state: 'missing' })] });
-  assert.equal(m.runRemove(p, '1'), 'Only is the only game left — steamidler needs at least one.');
+  assert.equal(m.runRemove(p, '1'), 'Only is the only game left in your library — steamidler needs at least one.');
   assert.deepEqual(p.calls.remove, []);
   assert.equal(m.runRemove(p, '90'), '⏹️ Stopped idling Gone.');
   assert.deepEqual(p.calls.remove, [90]);

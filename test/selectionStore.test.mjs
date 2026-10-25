@@ -60,7 +60,8 @@ test('unparsable JSON is renamed to .invalid and falls back', () => {
   assert.equal(fs.existsSync(FILE), false);
   assert.equal(fs.readFileSync(`${FILE}.invalid`, 'utf8'), '{ not json');
   assert.equal(lines.length, 1);
-  assert.match(lines[0], /selection-alice\.json/);
+  // Only the file name, never the full path, on any OS
+  assert.equal(lines[0], 'selection-alice.json: unreadable or not JSON; renamed to selection-alice.json.invalid');
 });
 
 test('unparsable JSON with no favorites gives null', () => {

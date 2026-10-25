@@ -1,5 +1,5 @@
 import { readFileSync, existsSync, renameSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { writeFileAtomic } from './atomicWrite.js';
 import { CONFIG_DIR, ensureConfigDir, loadFavorites } from './favorites.js';
 import { MAX_IDLE_GAMES } from '../constants.js';
@@ -48,7 +48,7 @@ function cleanEntries(
 // Sets an unusable file aside as .invalid (replacing an older one) so it is never
 // overwritten silently; a rename failure is logged and loading carries on.
 function setAside(filePath: string, reason: string, log: (line: string) => void): void {
-  const fileName = filePath.split(/[\/]/).pop();
+  const fileName = basename(filePath);
   try {
     renameSync(filePath, `${filePath}.invalid`);
     log(`${fileName}: ${reason}; renamed to ${fileName}.invalid`);

@@ -101,7 +101,7 @@ export function runRemove(panel: ControlPanel, rawAppid: string): string {
     return inLibrary ? `${panel.library().find((g) => g.appid === appid)!.name} isn't being idled.` : 'Unknown game.';
   }
   const inLibraryCount = selection.filter((g) => g.state !== 'missing').length;
-  if (game.state !== 'missing' && inLibraryCount <= 1) return `${game.name} is the only game left — steamidler needs at least one.`;
+  if (game.state !== 'missing' && inLibraryCount <= 1) return `${game.name} is the only game left in your library — steamidler needs at least one.`;
   panel.remove(appid);
   return `⏹️ Stopped idling ${game.name}.`;
 }
