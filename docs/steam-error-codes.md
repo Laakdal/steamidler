@@ -9,12 +9,13 @@ stop or crash the application, how `steam-user@5.3.0` surfaces each, and what
 > failures are classified by eresult, terminal ones stop immediately, rate limits
 > back off exponentially, non-fatal disconnects defer to steam-user's own
 > reconnect loop, and transient startup failures no longer delete credentials.
-> `src/index.ts` is the source of truth.
+> The code (`src/start.ts`, `src/steam/resume.ts`) is the source of truth; line
+> references to `src/index.ts` below predate the split into modules.
 
 Sources of truth: the installed enum
 (`node_modules/steam-user/enums/EResult.js`), the logon component
 (`node_modules/steam-user/components/09-logon.js`), and the app's own handling
-in `src/index.ts` / `src/steam/client.ts`.
+in `src/start.ts`, `src/steam/resume.ts` and `src/steam/client.ts`.
 
 ---
 

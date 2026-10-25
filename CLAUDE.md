@@ -31,7 +31,7 @@ Read a doc when its trigger applies. Update it in the same change as what it des
 ## 2. Change safely
 
 - **Start from a clean tree** on the feature branch, so `git diff` shows exactly your change. Commit the previous task first if it is done and approved.
-- **Read before changing.** `src/index.ts` is a long state machine; most "simple" changes touch a guard (`rt.isWaitingForResume`, `rt.isInEditMode`, `session.blocked`, `rt.isShuttingDown`).
+- **Read before changing.** The idler is a state machine spread over `src/start.ts`, `src/steam/resume.ts`, `src/steam/flush.ts` and `src/session.ts`; most "simple" changes touch a guard (`rt.isWaitingForResume`, `rt.isInEditMode`, `session.blocked`, `rt.isShuttingDown`).
 - **Reuse.** Extract and share existing logic (as `Session.apply` through `installSelection` and `BOT_DOWN_REASONS` are shared) rather than writing a second copy. Untouched paths keep their behavior.
 - **Library behavior:** when a design depends on what discord.js, steam-user or steam-session do, check their source in `node_modules` rather than assuming. (A failed `Client.login()` destroys that client for good, which shaped `bot.ts`.)
 - **Designs first:** anything non-trivial gets a spec in `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` before code. Say what you plan to change from an approved plan, and why, before doing it.

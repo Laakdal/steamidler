@@ -6,7 +6,9 @@ How the code is laid out and how the idling state model works. The rules every c
 
 ```
 src/
-  index.ts                  entry point and orchestrator: CLI flags, login, starting idling, the Steam event handlers
+  index.ts                  entry point, wiring only: builds the Steam client, notifier, Runtime and every module, the process handlers
+  cli.ts                    parseArgs and main: help, version, logout, --setup-discord, then headless or interactive start
+  start.ts                  App; headless and interactive start, login, startIdling and the Steam event handlers
   runtime.ts                Runtime: the shared context (Steam client, notifier, session, timers, guard flags)
   session.ts                Session: the idling and paused games, banking, applying a selection, block and unblock
   timers.ts                 Timers: every timer by name, so shutdown clears them all in one call
@@ -41,7 +43,7 @@ docs/                       project docs (this file, development, runbook, live-
 
 The Discord features each have a design that explains how their modules fit together: the bot and notifier in [docs/superpowers/specs/2026-10-19-discord-control-panel-design.md](superpowers/specs/2026-10-19-discord-control-panel-design.md), the live status box in [docs/superpowers/specs/2026-10-22-discord-status-panel-design.md](superpowers/specs/2026-10-22-discord-status-panel-design.md).
 
-## Idling state model (`src/session.ts`, driven from `src/index.ts`)
+## Idling state model (`src/session.ts`, driven from `src/start.ts`)
 
 Each selected game is an `IdlingGame` in exactly one of two lists of `rt.session`:
 
