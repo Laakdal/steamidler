@@ -6,12 +6,8 @@ import type { SteamClient } from './client.js';
 import { createSpinner } from '../ui/spinner.js';
 import { saveCredentials, loadCredentials, clearCredentials, hasStoredCredentials } from '../storage/credentials.js';
 import type { LoginResult } from '../types/index.js';
+import { DEAD_TOKEN_ERESULTS } from './eresults.js';
 
-// Logon EResults that say the saved token itself is no good: InvalidPassword,
-// AccessDenied, Revoked, Expired, CachedCredentialInvalid. Only these delete
-// credentials.json; a network fault, an outage or a rate limit keeps it, or one
-// bad moment at boot would leave the headless service needing a manual login.
-const DEAD_TOKEN_ERESULTS = new Set([5, 15, 26, 27, 126]);
 // steam-session polls for 30 s by default, not enough time to find the phone
 // and approve the login
 const APPROVAL_WINDOW_MS = 120_000;
@@ -191,8 +187,9 @@ export async function loginWithCredentials(client: SteamClient): Promise<LoginRe
   });
 }
 
-// Logs on with the token saved by an earlier login. A token Steam rejects for
-// good is deleted; any other failure keeps it for the next try.
+// Logs on with the token saved by an earlier login. Only a token Steam calls
+// dead is deleted; a network fault, an outage or a rate limit keeps it, or one
+// bad moment at boot would leave the headless service needing a manual login.
 export async function loginWithStoredCredentials(client: SteamClient): Promise<LoginResult> {
   const saved = loadCredentials();
   if (!saved) return { success: false, error: 'No stored credentials' };

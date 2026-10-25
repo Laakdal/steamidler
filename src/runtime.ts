@@ -63,12 +63,12 @@ export interface Runtime {
   isInEditMode: boolean;
   // Nothing repaints or changes state
   isShuttingDown: boolean;
-  // True once a terminal 🛑 "stopped" message has been sent (give-up paths). A
-  // 🛑 "paused" message does not count: a later quit still deserves its own.
+  // A give-up path has already told Discord why idling stopped, so the
+  // shutdown sends no "quit by user" on top. A paused notice does not count.
   stopNotified: boolean;
-  // Set immediately before a self-initiated relog (periodic flush or zombie
-  // recovery). Suppresses the 🛑/▶️ Discord pair for the relog cycle; cleared in
-  // restoreIdling once the session is back.
+  // A relog of our own is in flight (the 4-hour flush or zombie recovery). Its
+  // disconnect sends no paused/resumed pair; restoreIdling clears it and posts
+  // one flush line instead.
   selfInitiatedRelog: boolean;
   // True once the save-failure notice went to Discord; a successful save clears
   // it, so each streak of failed saves warns once.
@@ -115,8 +115,8 @@ export function createRuntime(deps: {
   };
 }
 
-// True while idling games accrue no server-side playtime, so the display and
-// daily report must not add the live delta.
+// Steam is crediting nothing right now (waiting to resume, or blocked), so the
+// screen and the daily report count banked time only
 export function isFrozen(rt: Runtime): boolean {
   return rt.isWaitingForResume || rt.session.blocked;
 }

@@ -17,60 +17,57 @@ import { Flush } from './steam/flush.js';
 import { Resume } from './steam/resume.js';
 import { main } from './cli.js';
 
-// The concrete client and notifier stay at hand for login and the bot, which
-// need the full types; everything else goes through rt.
+// Builds every module once and hands them to main (src/cli.ts).
+
+// Login and the bot need the concrete client and notifier; the rest reach them through rt
 const client = new SteamClient();
 const discord = new DiscordNotifier();
-// Shared context: game state (rt.session), guard flags and timers (rt.timers)
+// The shared state: the session, the guard flags, the named timers
 const rt = createRuntime({ client, discord, isHeadless: IS_HEADLESS });
-// The status table and its 60 s tick
-const view = new StatusView(rt);
-// The midnight report and its day-start snapshot
-const report = new DailyReport(rt);
-// Shutdown, crash and unhandled-rejection paths
+const view = new StatusView(rt); // the idling screen and its refresh loop
+const report = new DailyReport(rt); // the midnight Discord report
 const shutdown = createShutdown(rt);
-const { handleShutdown, handleCrash, handleRejection } = shutdown;
-// Lets code outside this file repaint, shut down or save the selection without importing it
-rt.actions = { render: () => view.render(), shutdown: handleShutdown, saveSelection: () => saveCurrentSelection(rt) };
-// The 4-hour flush relog and the zombie watchdog
-const flush = new Flush(rt);
-// Waiting, getting back and the paused/resumed notices; startIdling registers its handlers
-const resume = new Resume(rt, flush, view);
-// The E key's selector while idling
-const editMode = createEditMode(rt, view, report);
-// What the Discord bot may see and do; startIdling hands it to the bot client.
-const controlPanel = createControlPanel(rt, report);
+// Lets any module redraw, stop or save without importing these (no import cycles)
+rt.actions = {
+  render: () => view.render(),
+  shutdown: shutdown.handleShutdown,
+  saveSelection: () => saveCurrentSelection(rt),
+};
+const flush = new Flush(rt); // the 4-hour relog and the zombie check
+const resume = new Resume(rt, flush, view); // reconnects and the paused/resumed notices
+const editMode = createEditMode(rt, view, report); // the E key
+const controlPanel = createControlPanel(rt, report); // what the bot may see and change
 
-// Signal, crash and token-renewal handlers. main installs them only once a
-// CLI-only flag is ruled out, so --setup-discord keeps the default Ctrl+C.
+// Steam renewed the refresh token at logon. The old one stops working, so the
+// new one has to reach disk or the next start cannot log in; this session runs
+// on the in-memory copy either way.
+function saveRenewedToken(refreshToken: string): void {
+  const accountName = loadCredentials()?.accountName ?? rt.accountName;
+  if (!accountName) return;
+  if (!saveCredentials({ accountName, refreshToken })) {
+    rt.discord.send(
+      '⚠️ Steam renewed the login token but it could not be saved — the next restart will need an interactive login.'
+    );
+  }
+}
+
+// Signal, crash and token handlers. main installs them only after ruling out
+// the CLI-only flags, so --setup-discord keeps Node's default Ctrl+C.
 function installHandlers(): void {
-  process.on('SIGINT', () => handleShutdown(0));
-  process.on('SIGTERM', () => handleShutdown(0));
-  // Terminal closed / SSH dropped: still stop playing and log off cleanly
-  process.on('SIGHUP', () => handleShutdown(0));
-  process.on('uncaughtException', handleCrash);
-  process.on('unhandledRejection', handleRejection);
-
-  // Steam renews a refresh token that is close to expiry at logon; the old one
-  // is invalid from then on, so persist the new one or the next start fails.
-  // The live session keeps running on the in-memory token either way.
-  rt.client.onRefreshToken((refreshToken) => {
-    const stored = loadCredentials();
-    const name = stored?.accountName ?? rt.accountName;
-    if (!name) return;
-    if (!saveCredentials({ ...stored, accountName: name, refreshToken })) {
-      rt.discord.send(
-        '⚠️ Steam renewed the login token but it could not be saved — the next restart will need an interactive login.'
-      );
-    }
-  });
+  // SIGHUP: the terminal or SSH session closed; still stop and log off cleanly
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+    process.on(signal, () => shutdown.handleShutdown(0));
+  }
+  process.on('uncaughtException', shutdown.handleCrash);
+  process.on('unhandledRejection', shutdown.handleRejection);
+  rt.client.onRefreshToken(saveRenewedToken);
 }
 
 const app = { rt, client, discord, view, report, flush, resume, shutdown, editMode, controlPanel, installHandlers };
 
 main(app, process.argv.slice(2)).catch((err: Error) => {
-  // Ctrl+C inside an inquirer prompt (raw mode, so no SIGINT) rejects with
-  // ExitPromptError — a normal exit, not an error to print.
+  // Ctrl+C in an inquirer prompt (raw mode, so no SIGINT) rejects with
+  // ExitPromptError: an ordinary way out, not an error
   if (err.name === 'ExitPromptError') {
     showGoodbye();
     process.exit(0);

@@ -10,9 +10,8 @@ export class Session {
   // Saved games not in the library (family sharing late or withdrawn): kept in
   // the selection and the cap, never idled; retried at the next start.
   private missingGames: GameSelection[] = [];
-  // True while another session on this account is playing. Steam blocks this
-  // session's gamesPlayed entirely, so local time accounting freezes for every
-  // idling game, not just the one being played.
+  // Another device on the account is playing. Steam then ignores our whole
+  // games list, so every clock stops, not only the clock of the game it plays.
   private playingBlocked = false;
 
   // now is injectable so tests can drive the clocks
@@ -68,12 +67,14 @@ export class Session {
     this.playingBlocked = blocked;
   }
 
-  // Folds the live delta into accumulatedMs and restarts the clock. Idempotent,
-  // so overlapping freeze paths (edit mode, waiting state, playing-blocked) can
-  // never double-count the same interval.
+  // Moves the time each idling clock has run into accumulatedMs and starts the
+  // clock again from now. A second call adds nothing new, so the edit, waiting
+  // and block paths can each call it without counting a stretch twice.
   bank(now = this.now()): void {
+    const t = now.getTime();
     for (const game of this.idlingGames) {
-      game.accumulatedMs += now.getTime() - game.startTime.getTime();
+      const ran = t - game.startTime.getTime();
+      game.accumulatedMs += ran;
       game.startTime = now;
     }
   }
@@ -87,8 +88,8 @@ export class Session {
     const oldAppIds = new Set(this.selection().map((g) => g.appid));
     const newAppIds = new Set(selection.map((g) => g.appid));
 
-    // Kept idling games keep their running clock: the selector time was idled
-    // too. A block or disconnect that landed meanwhile already owns startTime.
+    // A game that stays keeps its clock running: Steam counted the time the
+    // picker was open too. If a block or drop came meanwhile, it set startTime already.
     const keptIdlingGames = this.idlingGames.filter((g) => newAppIds.has(g.appid));
     const keptPausedGames = this.pausedGames.filter((g) => newAppIds.has(g.appid));
     const keptMissingGames = this.missingGames.filter((g) => newAppIds.has(g.appid));
@@ -128,10 +129,11 @@ export class Session {
 
     if (blocked) {
       if (opts.bank) this.bank(now);
-      const idleIndex = this.idlingGames.findIndex((g) => g.appid === playingApp);
-      if (idleIndex !== -1) {
-        const [pausedGame] = this.idlingGames.splice(idleIndex, 1);
-        if (pausedGame) this.pausedGames.push(pausedGame);
+      // The game being played elsewhere, if it is one of ours, shows as paused
+      const played = this.idlingGames.find((g) => g.appid === playingApp);
+      if (played) {
+        this.idlingGames = this.idlingGames.filter((g) => g !== played);
+        this.pausedGames.push(played);
       }
     } else {
       this.releasePaused();

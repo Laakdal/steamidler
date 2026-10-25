@@ -2,203 +2,198 @@ import { isFrozen } from '../runtime.js';
 import type { Runtime } from '../runtime.js';
 import type { IdlingGame } from '../types/index.js';
 
-const HOURS_MS = 60 * 60 * 1000;
-// Periodic relog to force a playtime commit (clean logOff). Caps worst-case loss
-// at this interval instead of the whole session.
-const FLUSH_INTERVAL_MS = 4 * HOURS_MS;
-// Watchdog that checks server playtime is actually climbing. Must exceed the
-// ~30min commit lore to avoid false positives.
-const ZOMBIE_CHECK_INTERVAL_MS = 90 * 60 * 1000;
-const TAKEOVER_DRIFT_DELAY_MS = 120_000;
+const MINUTE_MS = 60_000;
+// Steam commits a session's playtime when the session ends cleanly, so a
+// relog this often bounds what a session that dies unnoticed can lose
+const FLUSH_EVERY_MS = 4 * 60 * MINUTE_MS;
+// How often the committed playtime is checked for growth. Steam's commits are
+// about 30 minutes apart, so a shorter window would raise false alarms.
+const CHECK_EVERY_MS = 90 * MINUTE_MS;
+// After a takeover, wait this long before reading back what Steam kept
+const DRIFT_CHECK_DELAY_MS = 2 * MINUTE_MS;
 
-// The 4-hour flush relog and the zombie watchdog, which together cap how much
-// playtime a stale Steam session can lose (docs/steam-playtime-research.md).
-// Constructed inert: start() arms the timers once idling has begun.
+// A committed playtime reading for one app
+interface Reading {
+  appid: number;
+  playtime: number;
+}
+
+// Two guards on Steam actually counting the idle time
+// (docs/steam-playtime-research.md): a relog every 4 hours that commits the
+// running session, and a check that the committed playtime keeps growing,
+// which relogs a session that stopped counting. Built inert; start() arms
+// both once idling has begun.
 export class Flush {
-  // Last successful single-app playtime probe (zombie watchdog). Doubles as the
-  // "last known good" baseline for post-takeover drift reporting.
-  private zombieBaseline: { appid: number; playtime: number; at: number } | null = null;
-  private lastGoodPlaytime: { appid: number; playtime: number } | null = null;
-  private takeoverDriftPending = false;
-  // Consecutive zombie checks with flat server playtime (two-strike: the first
-  // flat reading triggers a flush relog, only a second confirms a real zombie).
-  private zombieStrike = 0;
-  // Apps the owned-apps probe returns nothing for (family-shared / unvetted);
-  // skipped as probe candidates so the watchdog is not silently disabled.
-  private readonly unprobeableAppIds = new Set<number>();
+  // The reading the next check compares against (null: take a new one)
+  private baseline: Reading | null = null;
+  // The last reading that showed growth, the "before" of a takeover report
+  private lastGood: Reading | null = null;
+  // A takeover happened; report what Steam kept once the session is back
+  private driftReportDue = false;
+  // A flat check relogs first; only a second flat check in a row means the
+  // session is really dead
+  private flatChecks = 0;
+  // Apps Steam's owned-apps answer leaves out (family-shared, unvetted). They
+  // cannot be probed, and probing one for ever would switch the check off.
+  private readonly unprobeable = new Set<number>();
 
-  // Takes the shared runtime; arms nothing yet
   constructor(private readonly rt: Runtime) {}
 
-  // Arms the flush and zombie timers when idling starts
+  // Arms the relog and the check
   start(): void {
-    this.scheduleFlush();
-    this.scheduleZombieCheck();
+    this.armFlush();
+    this.armCheck();
   }
 
-  // Server playtime is flat for the whole block; a baseline from before it
-  // would read as a zombie strike on the first probe afterwards.
+  // Playtime stands still during a block; a baseline from before it would
+  // count as a flat check right after
   resetBaseline(): void {
-    this.zombieBaseline = null;
-    this.zombieStrike = 0;
+    this.baseline = null;
+    this.flatChecks = 0;
   }
 
-  // A takeover kicked the session: once it is back, report how much of the
-  // pre-takeover tail the server kept (only when a known-good value exists).
+  // Called on a takeover: once back, report how much of the time before it
+  // Steam kept (only when there is a good reading to compare with)
   noteTakeover(): void {
-    if (this.lastGoodPlaytime) this.takeoverDriftPending = true;
+    if (this.lastGood) this.driftReportDue = true;
   }
 
-  // Called by restoreIdling once the session is back: runs the pending drift report
+  // Called by restoreIdling once the session is back
   afterResume(): void {
-    if (this.takeoverDriftPending) {
-      if (this.lastGoodPlaytime) this.reportTakeoverDrift(this.lastGoodPlaytime);
-      this.takeoverDriftPending = false;
-    }
+    if (!this.driftReportDue) return;
+    this.driftReportDue = false;
+    if (this.lastGood) this.reportDrift(this.lastGood);
   }
 
-  // One-shot, delayed comparison of the server's committed playtime against the
-  // last known-good value, to quantify how much of the pre-takeover tail survived.
-  // Observability only; reuses the zombie watchdog's baseline.
-  private reportTakeoverDrift(lastGood: { appid: number; playtime: number }): void {
-    this.rt.timers.timeout('takeoverDrift', async () => {
-      try {
-        const now = await this.rt.client.getPlaytimeForever(lastGood.appid);
-        if (now === null) return;
-        const delta = now - lastGood.playtime;
-        const name = this.rt.library.byId.get(lastGood.appid)?.name ?? `App ${lastGood.appid}`;
-        const sign = delta >= 0 ? '+' : '';
-        this.rt.discord.send(
-          `📊 Post-takeover commit check (${name}): last-known ${lastGood.playtime}m → now ${now}m (Δ${sign}${delta}m).`
-        );
-      } catch {
-        // Best-effort observability — a failed probe is not worth surfacing.
-      }
-    }, TAKEOVER_DRIFT_DELAY_MS);
+  // One delayed reading of the app's committed playtime against the last good
+  // one, sent to Discord. Information only: a failed probe is dropped.
+  private reportDrift(before: Reading): void {
+    const rt = this.rt;
+    rt.timers.timeout(
+      'takeoverDrift',
+      async () => {
+        try {
+          const after = await rt.client.getPlaytimeForever(before.appid);
+          if (after === null) return;
+          const delta = after - before.playtime;
+          const name = rt.library.byId.get(before.appid)?.name ?? `App ${before.appid}`;
+          rt.discord.send(
+            `📊 Post-takeover commit check (${name}): last-known ${before.playtime}m → now ${after}m (Δ${delta >= 0 ? '+' : ''}${delta}m).`
+          );
+        } catch {
+          // A probe that fails here is not worth a message
+        }
+      },
+      DRIFT_CHECK_DELAY_MS
+    );
   }
 
-  // Shared self-initiated relog used by the periodic flush and zombie recovery. A
-  // clean logOff commits the in-flight idle session; the disconnect→loggedOn
-  // handlers restore idling and clear the suppression flag. Re-entrant calls
-  // (flush timer and zombie check firing close together) are ignored: steamID
-  // stays set until Steam acknowledges the logOff, so isConnected alone is not
-  // enough to detect a relog already in flight.
+  // Logs off and on to make Steam commit the running session (also used to
+  // replace a dead one). The disconnect and logon handlers restore idling and
+  // clear selfInitiatedRelog. steamID stays set until Steam answers the logOff,
+  // so isConnected cannot tell a relog in flight: the flag is what stops a
+  // second one when the flush and the check fire close together.
   forceRelog(): void {
-    if (!this.rt.client.isConnected || this.rt.selfInitiatedRelog) return;
-    this.rt.selfInitiatedRelog = true;
+    const rt = this.rt;
+    if (!rt.client.isConnected || rt.selfInitiatedRelog) return;
+    rt.selfInitiatedRelog = true;
     try {
-      this.rt.client.relog();
+      rt.client.relog();
     } catch {
-      this.rt.selfInitiatedRelog = false;
+      rt.selfInitiatedRelog = false;
     }
   }
 
-  // Mitigation A: periodically force a clean logOff+reconnect so the server folds
-  // the in-flight idle session into playtime_forever. Caps worst-case loss at
-  // FLUSH_INTERVAL_MS. Self-reschedules.
-  private scheduleFlush(): void {
-    this.rt.timers.timeout('flush', () => {
-      const rt = this.rt;
-      const idle = !rt.isWaitingForResume && !rt.isInEditMode && !rt.isShuttingDown && !rt.session.blocked;
-      if (idle && rt.session.idling.length > 0) {
-        this.forceRelog();
-      }
-      this.scheduleFlush();
-    }, FLUSH_INTERVAL_MS);
+  // Every FLUSH_EVERY_MS: relog, when games are idling and nothing else owns the session
+  private armFlush(): void {
+    this.rt.timers.timeout(
+      'flush',
+      () => {
+        const rt = this.rt;
+        const quiet = !rt.isWaitingForResume && !rt.isInEditMode && !rt.isShuttingDown && !rt.session.blocked;
+        if (quiet && rt.session.idling.length > 0) this.forceRelog();
+        this.armFlush();
+      },
+      FLUSH_EVERY_MS
+    );
   }
 
-  // Picks the app to probe: stick with the current baseline app while it is still
-  // continuously idling, otherwise fall back to the first probeable idling game
-  // (which forces a re-baseline rather than a false zombie verdict).
-  private pickProbeApp(): IdlingGame | null {
-    if (this.zombieBaseline) {
-      const still = this.rt.session.idling.find((g) => g.appid === this.zombieBaseline!.appid);
-      if (still) return still;
-    }
-    return this.rt.session.idling.find((g) => !this.unprobeableAppIds.has(g.appid)) ?? null;
+  // The game to read: the baseline's game while it still idles, so readings
+  // compare like with like; otherwise the first idling game that can be read
+  // (which then starts a new baseline instead of counting as flat)
+  private probeTarget(): IdlingGame | null {
+    const { idling } = this.rt.session;
+    const same = this.baseline && idling.find((g) => g.appid === this.baseline?.appid);
+    return same || (idling.find((g) => !this.unprobeable.has(g.appid)) ?? null);
   }
 
-  // Mitigation B: confirm the server's playtime is actually climbing for a
-  // continuously-idled app. If a full window passes with no increase, commits are
-  // silently dying (zombie session) → alert + force a relog. scheduleZombieCheck
-  // re-arms it.
+  // Nothing may relog while the session is down, being edited, stopping or
+  // already relogging
+  private mustSkip(): boolean {
+    const rt = this.rt;
+    return isFrozen(rt) || rt.isInEditMode || rt.isShuttingDown || rt.selfInitiatedRelog || !rt.client.isConnected;
+  }
+
+  // Reads the committed playtime of one idling game. Growth since the last
+  // reading is healthy. A full window without growth relogs once; a second
+  // in a row alerts Discord and relogs again.
   async runZombieCheck(): Promise<void> {
     const rt = this.rt;
-    if (isFrozen(rt) || rt.isInEditMode || rt.isShuttingDown || rt.selfInitiatedRelog || !rt.client.isConnected) {
-      return;
-    }
-    if (rt.session.idling.length === 0) {
-      this.zombieBaseline = null;
-      return;
-    }
-
-    const probe = this.pickProbeApp();
-    if (!probe) {
-      this.zombieBaseline = null;
+    if (this.mustSkip()) return;
+    const target = this.probeTarget();
+    if (!target) {
+      this.baseline = null;
       return;
     }
 
     let playtime: number | null;
     try {
-      playtime = await rt.client.getPlaytimeForever(probe.appid);
+      playtime = await rt.client.getPlaytimeForever(target.appid);
     } catch {
-      return; // transient fetch error — keep the baseline, try again next tick
-    }
-    // State may have moved while the probe was in flight (disconnect, edit mode,
-    // shutdown); a relog must not fire into any of those.
-    if (isFrozen(rt) || rt.isInEditMode || rt.isShuttingDown || rt.selfInitiatedRelog || !rt.client.isConnected) {
+      // A failed request says nothing; keep the baseline for the next window
       return;
     }
+    // The state may have changed while the request ran
+    if (this.mustSkip()) return;
     if (playtime === null) {
-      // Inconclusive (app absent from the owned-apps response, e.g. family-shared).
-      // Remember it so the next tick probes a different game instead of this one
-      // forever.
-      this.unprobeableAppIds.add(probe.appid);
-      this.zombieBaseline = null;
+      // Steam left the app out: read another game next time
+      this.unprobeable.add(target.appid);
+      this.baseline = null;
       return;
     }
 
-    const now = Date.now();
-
-    if (!this.zombieBaseline || this.zombieBaseline.appid !== probe.appid) {
-      this.zombieBaseline = { appid: probe.appid, playtime, at: now };
-      this.lastGoodPlaytime = { appid: probe.appid, playtime };
-      this.zombieStrike = 0;
+    const reading = { appid: target.appid, playtime };
+    if (this.baseline?.appid !== target.appid || playtime > this.baseline.playtime) {
+      this.baseline = reading;
+      this.lastGood = reading;
+      this.flatChecks = 0;
       return;
     }
 
-    if (playtime > this.zombieBaseline.playtime) {
-      this.zombieBaseline = { appid: probe.appid, playtime, at: now };
-      this.lastGoodPlaytime = { appid: probe.appid, playtime };
-      this.zombieStrike = 0;
-      return;
-    }
-
-    // Same app, continuously idling, a full window with no server-side increase.
-    if (this.zombieStrike === 0) {
-      // First strike: a healthy session may just be slow to commit. Force a flush
-      // relog (which commits) and re-check next window before alarming. Keep the
-      // baseline so the next probe compares against the same value.
-      this.zombieStrike = 1;
+    // No growth over a whole window for a game that idled all along
+    this.flatChecks += 1;
+    if (this.flatChecks === 1) {
+      // Maybe just a slow commit: a relog commits for sure, and the next
+      // window compares against the same baseline
       this.forceRelog();
       return;
     }
-
-    // Second strike: a forced relog already failed to produce a commit → real
-    // zombie. Alert and force another reconnect, then reset.
     rt.discord.send('⚠️ Zombie session — playtime not committing after a relog. Forcing reconnect.');
-    this.zombieStrike = 0;
-    this.zombieBaseline = null;
+    this.flatChecks = 0;
+    this.baseline = null;
     this.forceRelog();
   }
 
-  // Runs the zombie check every ZOMBIE_CHECK_INTERVAL_MS, re-arming after each
-  // run unless a shutdown cleared the timers while the probe was in flight
-  private scheduleZombieCheck(): void {
-    this.rt.timers.timeout('zombie', async () => {
-      await this.runZombieCheck();
-      if (this.rt.isShuttingDown) return;
-      this.scheduleZombieCheck();
-    }, ZOMBIE_CHECK_INTERVAL_MS);
+  // Runs the check every CHECK_EVERY_MS. A shutdown that cleared the timers
+  // while a check was running must not see it armed again.
+  private armCheck(): void {
+    this.rt.timers.timeout(
+      'zombie',
+      async () => {
+        await this.runZombieCheck();
+        if (!this.rt.isShuttingDown) this.armCheck();
+      },
+      CHECK_EVERY_MS
+    );
   }
 }

@@ -63,11 +63,11 @@ function invalid(reason: string): null {
 // Invalid counts as "no config" so the next interactive run offers setup again.
 export function loadDiscordConfig(): DiscordConfig | null {
   if (!existsSync(CONFIG_PATH)) return null;
-  // The file holds tokens; keep it owner-only where supported.
+  // Tokens inside: tighten a file left readable by others (no effect on Windows)
   try {
     chmodSync(CONFIG_PATH, 0o600);
   } catch {
-    // Platforms without POSIX perms (or a perms error) — best effort only.
+    // Without POSIX permissions there is nothing to tighten
   }
   let raw: unknown;
   try {

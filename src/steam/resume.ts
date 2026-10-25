@@ -1,271 +1,262 @@
-import SteamUser from 'steam-user';
 import type { Runtime } from '../runtime.js';
 import type { Flush } from './flush.js';
+import { DEAD_TOKEN_ERESULTS, TERMINAL_ERESULTS, RATE_LIMIT_ERESULTS, eresultLabel } from './eresults.js';
 import { loadCredentials, clearCredentials } from '../storage/credentials.js';
 import { showError } from '../ui/display.js';
 
-const RESUME_RETRY_MS = 60_000;
-// A reconnect must hold for this long before we announce "▶️ resumed". While the
-// player is active on the account, every reconnect is kicked again within
-// seconds, so debouncing the notification collapses that flap into a single
-// paused/resumed pair instead of one per 60s retry.
-const RESUME_NOTIFY_GRACE_MS = 90_000;
-// Symmetric grace for the "⏸️ paused" side: a blip that reconnects within this
-// window (steam-user's own auto-relogin takes seconds) produces no messages.
-const PAUSE_NOTIFY_GRACE_MS = 30_000;
-// After a takeover the player is typically active for hours; a logon attempt
-// every 60s only gets kicked again and risks a logon rate limit.
-const TAKEOVER_RETRY_MS = 5 * 60_000;
-const GENERAL_FAILURE_RETRY_LIMIT = 30;
+const MINUTE_MS = 60_000;
+// First logon attempt after an ordinary drop
+const RETRY_AFTER_DROP_MS = MINUTE_MS;
+// First attempt after another device took the session. Its player usually goes
+// on for hours, and a logon every minute is only kicked again and invites a rate limit.
+const RETRY_AFTER_TAKEOVER_MS = 5 * MINUTE_MS;
+// "⏸️ paused" goes out only if the session is still down after this, so a
+// short drop that steam-user repairs by itself stays silent
+const PAUSE_NOTICE_DELAY_MS = 30_000;
+// "▶️ resumed" goes out only once the session has held this long. While
+// someone plays on the account each reconnect is kicked within seconds; the
+// delay turns that whole stretch into one paused/resumed pair.
+const RESUME_NOTICE_DELAY_MS = 90_000;
+// Ordinary failures: retries, and the backoff range between them
+const MAX_FAILURES = 30;
+const BACKOFF_FIRST_MS = MINUTE_MS;
+const BACKOFF_MAX_MS = 15 * MINUTE_MS;
+// Rate limits: fewer retries, longer waits, and never under the floor, since
+// Steam's lockout runs about 30 minutes and each early try extends it
 export const RATE_LIMIT_RETRY_LIMIT = 10;
-// EResults that auto-resume can never fix — credential-bad, account-level, or
-// protocol mismatch. Stop fast and require manual action instead of retrying.
-export const TERMINAL_ERESULTS = new Set<number>([
-  5, 15, 26, 27, 126, // InvalidPassword, AccessDenied, Revoked, Expired, CachedCredentialInvalid
-  17, 43, 51, 69, 73, 95, 114, // Banned, AccountDisabled, Suspended, ParentalControlRestricted, AccountLockedDown, AccountLimitExceeded, AccountDeleted
-  7, 119, 120, // InvalidProtocolVer, LauncherMigrated, SteamRealmMismatch
-]);
-// EResults from logging in too often — back off hard, never hammer (a fast retry
-// escalates the Steam lockout from 30min to hours to 24h).
-export const RATE_LIMIT_ERESULTS = new Set<number>([84, 87]); // RateLimitExceeded, AccountLoginDeniedThrottle
-// Subset of TERMINAL_ERESULTS where the stored refresh token itself is dead;
-// delete it so the next interactive start goes straight to a fresh login.
-const INVALID_TOKEN_ERESULTS = new Set<number>([5, 15, 26, 27, 126]);
-const BACKOFF_BASE_MS = 60_000;
-const BACKOFF_CAP_MS = 15 * 60 * 1000;
-export const RATE_LIMIT_BACKOFF_CAP_MS = 30 * 60 * 1000;
-// Steam's logon throttle lasts ~30 min and every early retry extends it, so a
-// rate-limited wait never starts below this.
-export const RATE_LIMIT_MIN_WAIT_MS = 10 * 60 * 1000;
-// Delay between tearing down a stuck steam-user connect attempt and our own logOn
-const ABORT_SETTLE_MS = 5000;
+export const RATE_LIMIT_BACKOFF_CAP_MS = 30 * MINUTE_MS;
+export const RATE_LIMIT_MIN_WAIT_MS = 10 * MINUTE_MS;
+// Pause between cancelling a stuck steam-user logon and starting ours
+const AFTER_ABORT_MS = 5000;
 
-// "3m" / "2h 05m" for Discord copy
+// A duration as Discord shows it: "3m", or "2h 05m" from an hour up
 export function formatDuration(ms: number): string {
-  const totalMinutes = Math.max(0, Math.floor(ms / 60000));
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return hours > 0 ? `${hours}h ${String(minutes).padStart(2, '0')}m` : `${minutes}m`;
+  const minutes = Math.max(0, Math.floor(ms / MINUTE_MS));
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
 }
 
-// Exponential backoff with full jitter; attempt is 1-based.
+// The wait before retry number `attempt` (from 1): doubling from one minute up
+// to `capMs`, then a random point in the upper half of that, so restarts on
+// several machines do not hit Steam in step
 export function backoffMs(attempt: number, capMs: number): number {
-  const exp = Math.min(capMs, BACKOFF_BASE_MS * 2 ** Math.max(0, attempt - 1));
-  return Math.floor(exp / 2 + Math.random() * (exp / 2));
+  const ceiling = Math.min(capMs, BACKOFF_FIRST_MS * 2 ** Math.max(0, attempt - 1));
+  return Math.floor(ceiling / 2 + Math.random() * (ceiling / 2));
 }
 
-// The idle display's 60 s tick, which waiting stops and a resume restarts
+// The idling screen's refresh loop, stopped while waiting and restarted on resume
 export interface DisplayLoop {
   start(): void;
   stop(): void;
 }
 
-// Waiting after a disconnect or kick, getting back with the saved token, and
-// the debounced paused/resumed notices. Constructed inert: index.ts registers
-// the Steam handlers that call in.
+// Gets idling back after the session drops or is taken over: freezes the
+// clocks, logs on again with the saved token on a backoff, and sends the
+// paused/resumed notices, each delayed so that brief or repeated drops do not
+// flood Discord. Built inert; the Steam event handlers in start.ts call in.
 export class Resume {
-  // True from the moment a pause was announced until the matching resume goes out.
-  private pauseNotified = false;
-  private pauseEpisodeStart = 0;
-  private transientFailureCount = 0;
-  private rateLimitCount = 0;
+  // A "paused" notice went out and no "resumed" has closed it yet
+  private pauseAnnounced = false;
+  // When the current outage began, for the downtime in the resumed notice
+  private outageStartedAt = 0;
+  private failures = 0;
+  private rateLimits = 0;
 
-  // Takes the shared runtime, the flush (for takeover drift) and the display loop
   constructor(
     private readonly rt: Runtime,
     private readonly flush: Flush,
     private readonly loop: DisplayLoop
   ) {}
 
-  // Announces a pause once per outage episode: delayed so a blip that reconnects
-  // within the grace window stays silent, and never repeated while an announced
-  // episode is still flapping (kicked again inside the resume grace). Never after
-  // a shutdown cleared the timers (a failed flush relog login can land then).
-  private schedulePauseNotification(reason: string): void {
-    if (this.rt.isShuttingDown) return;
-    if (this.pauseNotified || this.rt.timers.has('pauseNotify')) return;
-    this.pauseEpisodeStart = Date.now();
-    this.rt.timers.timeout('pauseNotify', () => {
-      this.pauseNotified = true;
-      this.rt.discord.send(`⏸️ Idling paused — ${reason}. Auto-retrying.`);
-    }, PAUSE_NOTIFY_GRACE_MS);
+  // Arms the next logon attempt
+  private retryIn(ms: number): void {
+    this.rt.timers.timeout('resume', () => void this.attemptResume(), ms);
   }
 
-  // Closes an announced episode once the reconnect has held for the grace window
-  private scheduleResumeNotification(): void {
-    if (!this.pauseNotified) return;
-    this.rt.timers.timeout('resumeNotify', () => {
-      this.pauseNotified = false;
-      const downtime = formatDuration(Date.now() - this.pauseEpisodeStart);
-      this.rt.discord.send(`▶️ Idling resumed after ${downtime} — ${this.rt.session.idling.length} games`);
-    }, RESUME_NOTIFY_GRACE_MS);
+  private resetFailures(): void {
+    this.failures = 0;
+    this.rateLimits = 0;
   }
 
-  // Freezes elapsed time and arms the resume poller after any disconnect or Steam error
+  // Ends the run with a console line, a Discord notice and an exit code
+  private giveUp(consoleText: string, discordText: string, exitCode: number): void {
+    showError(consoleText);
+    this.rt.discord.send(discordText);
+    this.rt.stopNotified = true;
+    this.rt.actions.shutdown(exitCode);
+  }
+
+  // Queues the "paused" notice for this outage. Not when one is queued or
+  // already out (a flapping session is one outage), and not after shutdown has
+  // cleared the timers (a failed relog can land that late).
+  private queuePauseNotice(reason: string): void {
+    const rt = this.rt;
+    if (rt.isShuttingDown || this.pauseAnnounced || rt.timers.has('pauseNotify')) return;
+    this.outageStartedAt = Date.now();
+    rt.timers.timeout(
+      'pauseNotify',
+      () => {
+        this.pauseAnnounced = true;
+        rt.discord.send(`⏸️ Idling paused — ${reason}. Auto-retrying.`);
+      },
+      PAUSE_NOTICE_DELAY_MS
+    );
+  }
+
+  // Queues the "resumed" notice that closes an announced outage
+  private queueResumeNotice(): void {
+    if (!this.pauseAnnounced) return;
+    this.rt.timers.timeout(
+      'resumeNotify',
+      () => {
+        this.pauseAnnounced = false;
+        const down = formatDuration(Date.now() - this.outageStartedAt);
+        this.rt.discord.send(`▶️ Idling resumed after ${down} — ${this.rt.session.idling.length} games`);
+      },
+      RESUME_NOTICE_DELAY_MS
+    );
+  }
+
+  // The session dropped (disconnect, Steam error, takeover): freeze the clocks
+  // and start trying to get back
   enterWaiting(reason: string, isTakeover = false): void {
     const rt = this.rt;
-    // Our own logOff during shutdown/crash emits 'disconnected' asynchronously;
-    // that must not re-arm resume or announce a pause after "stopped".
+    // Our own logOff during a shutdown also arrives as a disconnect, a moment
+    // later; it must neither restart the retries nor announce a pause
     if (rt.isWaitingForResume || rt.isShuttingDown) return;
     rt.isWaitingForResume = true;
     rt.waitingReason = reason;
-    // If a resume notification is still inside its grace window, the session is
-    // flapping: we reconnected and Steam kicked us again because the player is
-    // still active. This pause episode was already announced, so cancel the
-    // pending resume and stay silent instead of emitting another paused/resumed
-    // pair on every retry.
+    // A resumed notice still waiting means the session came back and was
+    // kicked again: the same outage, already announced, so stay quiet
     rt.timers.clear('resumeNotify');
-    // While blocked the clocks are already frozen (startTime stale by design);
-    // banking again would credit the blocked interval.
+    // A block has frozen the clocks already; banking now would credit the block
     if (!rt.session.blocked) rt.session.bank();
     this.loop.stop();
-    // In edit mode the selector owns the screen; enterEditMode re-renders the
-    // waiting state once the user leaves the selector.
+    // The picker owns the screen in edit mode and redraws when it closes
     if (!rt.isInEditMode) rt.actions.render();
-    // A self-initiated relog (flush/zombie recovery) suppresses the pause message;
-    // restoreIdling emits a single quiet "🔄 flush" line instead.
-    if (!rt.selfInitiatedRelog) this.schedulePauseNotification(reason);
-    rt.timers.timeout('resume', () => void this.attemptResume(), isTakeover ? TAKEOVER_RETRY_MS : RESUME_RETRY_MS);
+    // A relog of our own (flush, zombie recovery) is announced by restoreIdling instead
+    if (!rt.selfInitiatedRelog) this.queuePauseNotice(reason);
+    this.retryIn(isTakeover ? RETRY_AFTER_TAKEOVER_MS : RETRY_AFTER_DROP_MS);
   }
 
-  // Tries to log back in with the saved refresh token; bounded retries for both auth and generic errors
+  // One logon attempt with the saved token, and what to do when it fails
   async attemptResume(): Promise<void> {
     const rt = this.rt;
     if (rt.isShuttingDown) return;
 
-    // steam-user has autoRelogin: true and may have silently reconnected on its
-    // own between the disconnect event and this timer firing. Calling logOn
-    // again in that state throws "Already logged on" from inside a nextTick
-    // async function — an unhandled rejection that crashes the process. Detect
-    // it here and just restore.
+    // steam-user may have reconnected by itself since the drop. A logOn now
+    // would throw "Already logged on" from a nextTick, crashing the process.
     if (rt.client.isConnected) {
-      this.transientFailureCount = 0;
-      this.rateLimitCount = 0;
+      this.resetFailures();
       this.restoreIdling();
       return;
     }
-
-    // Same trap mid-flight: after a non-fatal disconnect steam-user keeps
-    // reconnecting on its own (1s..60s backoff, each attempt several seconds), and
-    // logOn while it is connecting throws "Already attempting to log on" the same
-    // uncatchable way. Usually its loop ends in loggedOn (→ restoreIdling) or
-    // error (→ our next tick logs on), so keep polling for a bounded time.
+    // It may also still be reconnecting (its backoff runs 1 to 60 s per try),
+    // where logOn throws the same way. That usually ends in a logon or an
+    // error, so look again later, for a bounded time.
     if (rt.client.isReconnecting) {
-      rt.timers.timeout('resume', () => void this.attemptResume(), RESUME_RETRY_MS);
+      this.retryIn(RETRY_AFTER_DROP_MS);
       return;
     }
-    // Past that bound and still mid-connect: steam-user's loop is stuck (CM
-    // connect timeouts hold _connecting without ever emitting). Reclaim the
-    // connection, then log on next tick: an in-flight CM-list fetch of the
-    // aborted attempt only notices the teardown once it resumes, and a logOn in
-    // the same tick would let it open a second connection.
+    // Past that bound and still connecting: steam-user is stuck. Cancel its
+    // attempt and log on a few seconds later; a CM-list fetch from the cancelled
+    // attempt only sees the cancel when it resumes, and an immediate logOn would
+    // let it open a second connection.
     if (rt.client.isConnecting) {
       rt.client.abortPendingConnect();
-      rt.timers.timeout('resume', () => void this.attemptResume(), ABORT_SETTLE_MS);
+      this.retryIn(AFTER_ABORT_MS);
       return;
     }
 
-    const credentials = loadCredentials();
-    if (!credentials) {
-      showError('No stored credentials — cannot auto-resume');
-      rt.discord.send('🛑 Idling stopped — no stored credentials, cannot auto-resume.');
-      rt.stopNotified = true;
-      rt.actions.shutdown(0);
+    const saved = loadCredentials();
+    if (!saved) {
+      this.giveUp(
+        'No stored credentials — cannot auto-resume',
+        '🛑 Idling stopped — no stored credentials, cannot auto-resume.',
+        0
+      );
       return;
     }
     try {
-      // Prefer the token the session last ran on: a renewal that failed to
-      // persist leaves a dead token on disk.
-      const refreshToken = rt.client.currentRefreshToken ?? credentials.refreshToken;
-      await rt.client.loginWithRefreshToken(refreshToken, credentials.accountName);
-      this.transientFailureCount = 0;
-      this.rateLimitCount = 0;
+      // The token the session last ran on wins over the disk copy, which is
+      // stale if saving a renewed token failed
+      await rt.client.loginWithRefreshToken(rt.client.currentRefreshToken ?? saved.refreshToken, saved.accountName);
+      this.resetFailures();
       this.restoreIdling();
     } catch (err) {
-      const e = err as Error & { eresult?: number };
-      const code = e.eresult;
-      const label =
-        code !== undefined ? SteamUser.EResult[code] ?? `eresult ${code}` : e.message || 'unknown';
-
-      // A flush relog that does not come back is a real outage, not a quiet
-      // flush any more: stop suppressing and announce it like any other pause.
-      if (rt.selfInitiatedRelog) {
-        rt.selfInitiatedRelog = false;
-        this.schedulePauseNotification(`flush relog failed to reconnect (${label})`);
-      }
-
-      // Terminal: auto-resume can never fix it (bad credentials, account-level
-      // block, or protocol mismatch). Stop cleanly and require manual action.
-      // Exit 0 so a systemd unit does not restart-loop a permanent failure.
-      if (code !== undefined && TERMINAL_ERESULTS.has(code)) {
-        showError(`Resume aborted — ${label} is not auto-recoverable. Manual re-login required.`);
-        rt.discord.send(`🛑 Idling stopped — ${label}. Manual re-login required.`);
-        rt.stopNotified = true;
-        if (INVALID_TOKEN_ERESULTS.has(code)) clearCredentials();
-        rt.actions.shutdown(0);
-        return;
-      }
-
-      // Rate limited: back off hard. A fixed fast retry escalates the Steam
-      // lockout (30min → hours → 24h), so this is capped much higher than usual.
-      if (code !== undefined && RATE_LIMIT_ERESULTS.has(code)) {
-        this.rateLimitCount += 1;
-        if (this.rateLimitCount >= RATE_LIMIT_RETRY_LIMIT) {
-          showError(`Resume failed after ${RATE_LIMIT_RETRY_LIMIT} rate-limited attempts: ${label}`);
-          rt.discord.send(`🛑 Idling stopped — rate-limited ${RATE_LIMIT_RETRY_LIMIT}× (${label}).`);
-          rt.stopNotified = true;
-          rt.actions.shutdown(1);
-          return;
-        }
-        // A quit while the login was in flight already cleared every timer
-        if (rt.isShuttingDown) return;
-        rt.timers.timeout(
-          'resume',
-          () => void this.attemptResume(),
-          Math.max(RATE_LIMIT_MIN_WAIT_MS, backoffMs(this.rateLimitCount, RATE_LIMIT_BACKOFF_CAP_MS))
-        );
-        return;
-      }
-
-      // Transient/network: bounded retries with exponential backoff.
-      this.transientFailureCount += 1;
-      if (this.transientFailureCount >= GENERAL_FAILURE_RETRY_LIMIT) {
-        showError(`Resume failed after ${GENERAL_FAILURE_RETRY_LIMIT} attempts: ${label}`);
-        rt.discord.send(
-          `🛑 Idling stopped — failed to reconnect after ${GENERAL_FAILURE_RETRY_LIMIT}× (last error: ${label}).`
-        );
-        rt.stopNotified = true;
-        rt.actions.shutdown(1);
-        return;
-      }
-      // Likewise: no retry into a shutdown
-      if (rt.isShuttingDown) return;
-      rt.timers.timeout('resume', () => void this.attemptResume(), backoffMs(this.transientFailureCount, BACKOFF_CAP_MS));
+      this.handleFailure(err as Error & { eresult?: number });
     }
   }
 
-  // Re-establishes the gamesPlayed list and resumes the normal display loop.
-  // Idempotent: attemptResume's await and the onLoggedOn auto-relogin callback
-  // can race to call this; the guard prevents a duplicate resume (which would
-  // orphan the previous interval and send a second "resumed" notification).
+  // Sorts a failed logon: stop for good, wait out a rate limit, or retry with backoff
+  private handleFailure(err: Error & { eresult?: number }): void {
+    const rt = this.rt;
+    const code = err.eresult;
+    const label = eresultLabel(err);
+
+    // A flush relog that cannot get back is a real outage now: announce it
+    if (rt.selfInitiatedRelog) {
+      rt.selfInitiatedRelog = false;
+      this.queuePauseNotice(`flush relog failed to reconnect (${label})`);
+    }
+
+    if (code !== undefined && TERMINAL_ERESULTS.has(code)) {
+      if (DEAD_TOKEN_ERESULTS.has(code)) clearCredentials();
+      // Exit 0: systemd must not restart into the same permanent failure
+      this.giveUp(
+        `Resume aborted — ${label} is not auto-recoverable. Manual re-login required.`,
+        `🛑 Idling stopped — ${label}. Manual re-login required.`,
+        0
+      );
+      return;
+    }
+
+    if (code !== undefined && RATE_LIMIT_ERESULTS.has(code)) {
+      this.rateLimits += 1;
+      if (this.rateLimits >= RATE_LIMIT_RETRY_LIMIT) {
+        this.giveUp(
+          `Resume failed after ${RATE_LIMIT_RETRY_LIMIT} rate-limited attempts: ${label}`,
+          `🛑 Idling stopped — rate-limited ${RATE_LIMIT_RETRY_LIMIT}× (${label}).`,
+          1
+        );
+        return;
+      }
+      // A quit during the logon has cleared the timers: arm nothing
+      if (rt.isShuttingDown) return;
+      this.retryIn(Math.max(RATE_LIMIT_MIN_WAIT_MS, backoffMs(this.rateLimits, RATE_LIMIT_BACKOFF_CAP_MS)));
+      return;
+    }
+
+    this.failures += 1;
+    if (this.failures >= MAX_FAILURES) {
+      this.giveUp(
+        `Resume failed after ${MAX_FAILURES} attempts: ${label}`,
+        `🛑 Idling stopped — failed to reconnect after ${MAX_FAILURES}× (last error: ${label}).`,
+        1
+      );
+      return;
+    }
+    if (rt.isShuttingDown) return;
+    this.retryIn(backoffMs(this.failures, BACKOFF_MAX_MS));
+  }
+
+  // The session is back: send the games again and restart the clocks and the
+  // screen. attemptResume and a steam-user logon can both get here for the
+  // same reconnect, so only the first call acts.
   restoreIdling(): void {
     const rt = this.rt;
     if (!rt.isWaitingForResume) return;
-    // steam-user's auto-reconnect can land after we already said goodbye (e.g. a
-    // flush relog was in flight when the user quit). Leave the session off.
+    // A reconnect of steam-user's that lands after the goodbye: log it off again
     if (rt.isShuttingDown) {
       rt.client.logout();
       return;
     }
     rt.isWaitingForResume = false;
     rt.waitingReason = '';
-    this.transientFailureCount = 0;
-    this.rateLimitCount = 0;
-    // A fresh session starts unblocked; Steam re-reports a block via playingState
-    // right after logon, which handlePlayingState turns into a transition. Games
-    // paused by a block before the disconnect must rejoin now: Steam sends no
-    // "unblocked" event on logon, and its echo after gamesPlayed is not one either.
-    // release() also restarts every idling clock.
+    this.resetFailures();
+    // A new session starts unblocked, and Steam sends no "unblocked" for it, so
+    // games paused by a block before the drop rejoin here (their clocks restart
+    // with the rest). A block that still holds is reported again right after logon.
     rt.session.release();
     rt.client.setGamesPlaying(rt.session.idling.map((g) => g.appid));
     if (!rt.isInEditMode) {
@@ -273,32 +264,23 @@ export class Resume {
       this.loop.start();
     }
 
-    // A blip that reconnected inside the pause grace was never announced, so
-    // there is nothing to resume from either.
+    // Back inside the pause delay: the outage was never announced
     rt.timers.clear('pauseNotify');
     if (rt.selfInitiatedRelog) {
       rt.selfInitiatedRelog = false;
       rt.discord.send('🔄 flush — playtime committed, session refreshed');
     }
-    // Debounce: only announce a resume that actually holds. If the player is
-    // still active, this reconnect is kicked again within seconds and
-    // enterWaiting cancels this timer (see RESUME_NOTIFY_GRACE_MS), so a
-    // long play session collapses to a single paused/resumed pair. Also re-arms
-    // after a flush relog that landed inside an announced episode.
-    this.scheduleResumeNotification();
-
+    // Also covers a flush relog that landed inside an announced outage
+    this.queueResumeNotice();
     this.flush.afterResume();
   }
 
-  // Catches steam-user's silent auto-relogins so we restore idling promptly
-  // instead of waiting for the 60s attemptResume tick (which would then race
-  // with the now-connected client and crash).
+  // steam-user logged on by itself while we waited: restore now, instead of
+  // letting the pending attempt run into a connected client
   onLoggedOn(): void {
-    if (this.rt.isWaitingForResume) {
-      this.rt.timers.clear('resume');
-      this.transientFailureCount = 0;
-      this.rateLimitCount = 0;
-      this.restoreIdling();
-    }
+    if (!this.rt.isWaitingForResume) return;
+    this.rt.timers.clear('resume');
+    this.resetFailures();
+    this.restoreIdling();
   }
 }

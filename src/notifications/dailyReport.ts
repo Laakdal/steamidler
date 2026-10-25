@@ -2,128 +2,101 @@ import type { IdlingGame } from '../types/index.js';
 import type { Runtime } from '../runtime.js';
 import { isFrozen } from '../runtime.js';
 
-// Delay until the next local midnight, so the report lands at the day boundary
-function msUntilNextMidnight(): number {
-  const next = new Date();
-  next.setDate(next.getDate() + 1);
-  next.setHours(0, 0, 0, 0);
-  return next.getTime() - Date.now();
+const MINUTE_MS = 60_000;
+
+// Time to the next local midnight, when the report goes out
+function untilMidnight(): number {
+  const midnight = new Date();
+  midnight.setHours(24, 0, 0, 0);
+  return midnight.getTime() - Date.now();
 }
 
-// The midnight Discord report and the day-start snapshot its "today" gain is
-// measured from.
-export class DailyReport {
-  private dayStartAccumulatedMs = new Map<number, number>();
+// A game's banked idle time plus, while its clock runs, the time since the
+// clock last started. A frozen clock (waiting, blocked, paused) adds nothing.
+function idleMsNow(game: IdlingGame, frozen: boolean, now: number): number {
+  return frozen ? game.accumulatedMs : game.accumulatedMs + (now - game.startTime.getTime());
+}
 
-  // Takes the shared runtime the report reads the games from
+// The report sent to Discord at local midnight. "today" for each game is its
+// idle time now minus a snapshot taken at the start of the day.
+export class DailyReport {
+  // Idle time per appid when the day started
+  private atDayStart = new Map<number, number>();
+
   constructor(private readonly rt: Runtime) {}
 
-  // Takes today's baseline and arms the midnight report; startIdling calls it once
+  // Called once by startIdling: today's snapshot, then the first midnight
   start(): void {
     this.snapshotDayStart();
-    this.scheduleDailyReport();
+    this.armMidnight();
   }
 
-  // Arms the one-shot midnight timer; each firing sends the report, takes the
-  // new day's baseline and re-arms itself for the next midnight
-  private scheduleDailyReport(): void {
+  // One-shot timer to the next midnight. When it fires it reports the day
+  // that just ended, takes the new day's snapshot and arms itself again.
+  private armMidnight(): void {
     const rt = this.rt;
-    rt.timers.timeout('midnight', () => {
-      // Fires just after midnight but reports on the day that ended
-      const endedDay = new Date();
-      endedDay.setDate(endedDay.getDate() - 1);
-      const report = formatDailyReport(
-        rt.session.idling,
-        rt.session.paused,
-        this.dayStartAccumulatedMs,
-        endedDay,
-        isFrozen(rt)
-      );
-      rt.discord.send(report);
-      this.snapshotDayStart();
-      this.scheduleDailyReport();
-    }, msUntilNextMidnight());
+    rt.timers.timeout(
+      'midnight',
+      () => {
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        rt.discord.send(formatDailyReport(rt.session.idling, rt.session.paused, this.atDayStart, yesterday, isFrozen(rt)));
+        this.snapshotDayStart();
+        this.armMidnight();
+      },
+      untilMidnight()
+    );
   }
 
-  // Captures each game's current accumulated playtime for tomorrow's "today gain"
-  // calculation. Only idling games have a live delta; user-paused
-  // games are frozen at accumulatedMs (their startTime is stale by design).
+  // Records each game's idle time now, as the base for the next "today"
   snapshotDayStart(): void {
-    const rt = this.rt;
-    this.dayStartAccumulatedMs.clear();
+    const { session } = this.rt;
+    const frozen = isFrozen(this.rt);
     const now = Date.now();
-    const frozen = isFrozen(rt);
-    for (const game of rt.session.idling) {
-      const live = frozen
-        ? game.accumulatedMs
-        : game.accumulatedMs + (now - game.startTime.getTime());
-      this.dayStartAccumulatedMs.set(game.appid, live);
-    }
-    for (const game of rt.session.paused) {
-      this.dayStartAccumulatedMs.set(game.appid, game.accumulatedMs);
-    }
+    this.atDayStart.clear();
+    for (const game of session.idling) this.atDayStart.set(game.appid, idleMsNow(game, frozen, now));
+    // A paused game's clock is stopped, whatever its startTime says
+    for (const game of session.paused) this.atDayStart.set(game.appid, game.accumulatedMs);
   }
 
-  // Drops the day-start snapshot of games installSelection created
+  // Forgets the snapshot of games installSelection has just recreated
   forget(appids: number[]): void {
-    for (const appid of appids) this.dayStartAccumulatedMs.delete(appid);
+    for (const appid of appids) this.atDayStart.delete(appid);
   }
 }
 
-// Builds the daily Discord report. Pure formatter — no side effects. `date`
-// only labels the report (the day that ended); all arithmetic uses `nowMs`.
-// isFrozen is true while idling games accrue nothing (waiting to resume, or
-// blocked by another session), so the live delta must not be added.
+// "2h 5m", "5m", or "0m" for nothing (or less)
+function hoursMinutes(ms: number): string {
+  const minutes = Math.max(0, Math.floor(ms / MINUTE_MS));
+  return minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
+}
+
+// Builds the report text without side effects. `date` is only the label (the
+// day that ended); the arithmetic uses `nowMs`. `frozen` means the idling
+// games are accruing nothing right now (waiting to resume, or blocked).
 export function formatDailyReport(
   idling: readonly IdlingGame[],
   paused: readonly IdlingGame[],
   dayStartAccumulatedMs: Map<number, number>,
   date: Date,
-  isFrozen = false,
+  frozen = false,
   nowMs = Date.now()
 ): string {
-  const now = nowMs;
-  const dateStr = date.toLocaleDateString('en-CA'); // YYYY-MM-DD
-  const lines: string[] = [];
-  lines.push(`📊 Daily idling report — ${dateStr}`);
-
-  const todayGain = (game: IdlingGame, accumulated: number): string =>
-    formatHM(accumulated - (dayStartAccumulatedMs.get(game.appid) ?? 0));
+  // en-CA formats as YYYY-MM-DD
+  const lines = [`📊 Daily idling report — ${date.toLocaleDateString('en-CA')}`];
 
   if (idling.length > 0) {
-    lines.push('');
-    lines.push(`Idling (${idling.length})${isFrozen ? ' — currently paused' : ''}:`);
+    lines.push('', `Idling (${idling.length})${frozen ? ' — currently paused' : ''}:`);
     for (const game of idling) {
-      const liveAccumulated = isFrozen
-        ? game.accumulatedMs
-        : game.accumulatedMs + (now - game.startTime.getTime());
-      const totalMinutes = game.initialPlaytime + Math.floor(liveAccumulated / 60000);
-      lines.push(
-        `• ${game.name} — +${todayGain(game, liveAccumulated)} today, ${formatTotalH(totalMinutes)} total`
-      );
+      const idleMs = idleMsNow(game, frozen, nowMs);
+      const today = hoursMinutes(idleMs - (dayStartAccumulatedMs.get(game.appid) ?? 0));
+      const totalHours = Math.floor((game.initialPlaytime + Math.floor(idleMs / MINUTE_MS)) / 60);
+      lines.push(`• ${game.name} — +${today} today, ${totalHours.toLocaleString()}h total`);
     }
   }
 
   if (paused.length > 0) {
-    lines.push('');
-    lines.push(`User-paused (${paused.length}):`);
-    for (const game of paused) {
-      lines.push(`• ${game.name}`);
-    }
+    lines.push('', `User-paused (${paused.length}):`, ...paused.map((g) => `• ${g.name}`));
   }
-
   return lines.join('\n');
 }
-
-function formatHM(ms: number): string {
-  if (ms <= 0) return '0m';
-  const totalMinutes = Math.floor(ms / 60000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-}
-
-function formatTotalH(totalMinutes: number): string {
-  return `${Math.floor(totalMinutes / 60).toLocaleString()}h`;
-}
-

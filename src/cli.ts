@@ -5,28 +5,7 @@ import { type App, packageVersion, runHeadless, runInteractive } from './start.j
 
 const KNOWN_FLAGS = ['--headless', '--setup-discord', '--logout', '--help', '-h', '--version', '-v'];
 
-// Reads the command-line flags; anything not in KNOWN_FLAGS is listed in unknown
-export function parseArgs(argv: string[]): {
-  headless: boolean;
-  setupDiscord: boolean;
-  logout: boolean;
-  help: boolean;
-  version: boolean;
-  unknown: string[];
-} {
-  return {
-    headless: argv.includes('--headless'),
-    setupDiscord: argv.includes('--setup-discord'),
-    logout: argv.includes('--logout'),
-    help: argv.includes('--help') || argv.includes('-h'),
-    version: argv.includes('--version') || argv.includes('-v'),
-    unknown: argv.filter((a) => !KNOWN_FLAGS.includes(a)),
-  };
-}
-
-// Prints CLI usage
-function showHelp(): void {
-  console.log(`steamidler — Steam game idler CLI and daemon
+const USAGE = `steamidler — Steam game idler CLI and daemon
 
 Usage:
   steamidler                   Interactive mode (login, pick games, idle)
@@ -36,15 +15,37 @@ Usage:
   steamidler --version, -v     Print version
   steamidler --help, -h        Show this help
 
-Config lives in ~/.steam-idler/ (credentials, selection, discord).`);
+Config lives in ~/.steam-idler/ (credentials, selection, discord).`;
+
+// The flags given; anything not in KNOWN_FLAGS lands in unknown
+export function parseArgs(argv: string[]): {
+  headless: boolean;
+  setupDiscord: boolean;
+  logout: boolean;
+  help: boolean;
+  version: boolean;
+  unknown: string[];
+} {
+  const has = (...flags: string[]): boolean => flags.some((f) => argv.includes(f));
+  return {
+    headless: has('--headless'),
+    setupDiscord: has('--setup-discord'),
+    logout: has('--logout'),
+    help: has('--help', '-h'),
+    version: has('--version', '-v'),
+    unknown: argv.filter((a) => !KNOWN_FLAGS.includes(a)),
+  };
 }
 
-// Main entry point that orchestrates the application flow
+// Runs the one-shot flags (help, version, logout, Discord setup), each of
+// which exits; otherwise installs the process handlers and starts idling,
+// headless or interactive, and never returns
 export async function main(app: App, argv: string[]): Promise<void> {
   const { rt } = app;
   const args = parseArgs(argv);
+
   if (args.help) {
-    showHelp();
+    console.log(USAGE);
     rt.exit(0);
   }
   if (args.version) {
@@ -53,17 +54,15 @@ export async function main(app: App, argv: string[]): Promise<void> {
   }
   if (args.unknown.length > 0) {
     showError(`Unknown option: ${args.unknown.join(' ')}`);
-    showHelp();
+    console.log(USAGE);
     rt.exit(2);
   }
-
   if (args.logout) {
-    const had = hasStoredLogin();
+    const existed = hasStoredLogin();
     clearCredentials();
-    console.log(had ? 'Saved Steam login removed.' : 'No saved Steam login to remove.');
+    console.log(existed ? 'Saved Steam login removed.' : 'No saved Steam login to remove.');
     rt.exit(0);
   }
-
   if (args.setupDiscord) {
     try {
       await runDiscordSetup(packageVersion());
@@ -75,12 +74,7 @@ export async function main(app: App, argv: string[]): Promise<void> {
   }
 
   app.installHandlers();
-
-  if (rt.isHeadless) {
-    await runHeadless(app);
-  } else {
-    await runInteractive(app);
-  }
-
+  await (rt.isHeadless ? runHeadless(app) : runInteractive(app));
+  // Idling runs on timers and events from here; the process ends through shutdown
   await new Promise<void>(() => {});
 }
