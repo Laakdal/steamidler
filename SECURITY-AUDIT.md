@@ -488,7 +488,7 @@ The selected games are now saved and restored on every start; favorites, the ran
 
 ### The selection file
 
-- `~/.steam-idler/selection-<account>.json` holds a version, a time and the selected games (appid and name). No secret. It is written with `writeFileAtomic(..., 0o600)` and a failed write is logged, never thrown.
+- `~/.steam-idler/selection-<account>.json` holds a version, a time and the selected games (appid and name). No secret. It is written atomically with `writeFileAtomic` and the default file mode (no owner-only mode, since it holds no secret, like the favorites file before it), and a failed write is logged, never thrown.
 - **Validated on every load** (`src/storage/selection.ts`): an unreadable, non-JSON, non-object or unknown-version file is renamed to `selection-<account>.json.invalid` (replacing an older one) and treated as absent; single bad entries (appid not a positive integer, repeated) are dropped with a console line; more than 32 entries are cut to the first 32. A hand-edited file therefore cannot crash steamidler or push the selection past the cap.
 - The old `favorites-<account>.json` is read only when no selection file exists, its exempt field is ignored, and it is never written. A favorites game missing from the library at migration is saved with the placeholder name `App <id>` until the selection next changes.
 - Saved names come from an owner-editable file and are printed to the terminal as they are (local trust, the same as library names). Any text sent to Discord still goes through the existing escaping (`escapeMarkdown`, mentions disabled, embeds suppressed; code blocks in the status box).
