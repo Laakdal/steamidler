@@ -16,6 +16,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsc && node dist/index.js",
+    "test": "tsc && node --import ./test/fake/register.mjs --test --test-concurrency=1 --test-force-exit --test-timeout=20000 \"test/*.test.mjs\"",
     "prepublishOnly": "tsc"
   },
   "keywords": [

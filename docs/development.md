@@ -8,6 +8,7 @@ How to build, test, add a dependency, and branch and release. The quality gates 
 |---|---|
 | Install dependencies | `npx pnpm@10.34.6 install --frozen-lockfile --ignore-scripts` |
 | Build and type-check | `npx pnpm@10.34.6 build` (strict `tsc`; there is no linter) |
+| Run tests | `npx pnpm@10.34.6 test` (builds, then runs the offline suite in `test/`) |
 | See the CLI | `node dist/index.js --help` |
 | Resolve a new package | `npx pnpm@10.34.6 add <pkg>@<exact> --save-exact --lockfile-only --ignore-scripts --config.minimum-release-age=20160`, then the review in `AGENTS.md` §6 and an addendum in `SECURITY-AUDIT.md` |
 | Find what's left of a plan | compare `git log` with the plan's tasks; plan checkboxes are not ticked as work lands |
@@ -16,14 +17,13 @@ How to build, test, add a dependency, and branch and release. The quality gates 
 
 How much testing a change needs is in `CLAUDE.md` §5. This is how to write and run those tests.
 
-- Test files are throwaway `node:test` files in your scratchpad, kept out of the repo unless the user asks for a suite.
-- Each one imports compiled modules from `dist/` by absolute file URL, after `npx pnpm@10.34.6 build`.
-- Config paths are computed at import time: create a temp home, set `HOME` and `USERPROFILE` to it, and create `.steam-idler/` inside it **before** the dynamic import.
+- The suite is in `test/`: one `node:test` file per module (`test/*.test.mjs`). Run it with `npx pnpm@10.34.6 test`, which builds first and then runs every file. It needs Node 22+.
+- `test/helpers.mjs` has `dist(relPath)`, the file URL of `dist/<relPath>` for a dynamic import, and `tempHome()`, which makes a temp home with `.steam-idler/` inside and points `HOME` and `USERPROFILE` at it.
+- Config paths are computed at import time: call `tempHome()` **before** the dynamic imports.
 - Mock the network by assigning `globalThis.fetch`. A mock that simulates a hang rejects when `init.signal` aborts.
-- Replace discord.js with a fake module through a Node resolve hook (`module.register`, loaded with `node --import`), so no test opens a Gateway connection.
-- Run with `node --test --test-concurrency=1`: the notifier's timeout tests assert tight wall-clock bounds and can fail when files run in parallel.
-
-Earlier sessions' test files may still be in their scratchpads under `C:\Users\Nightingale\AppData\Local\Temp\claude\C--Mudrock-s-Headquarters-Project-Steam-Idle\*\scratchpad\tests`; copy them into your own scratchpad and run them as the regression baseline.
+- `test/fake/` replaces discord.js with a fake module through a Node resolve hook (`module.register`, loaded with `node --import ./test/fake/register.mjs`), so no test opens a Gateway connection.
+- The script runs with `--test-concurrency=1`: the notifier's timeout tests assert tight wall-clock bounds and can fail when files run in parallel.
+- `.github/workflows/ci.yml` runs the same `test` script on Ubuntu with Node 22 for every push to `main` or `dev` and every pull request. Its action versions are pinned by commit SHA.
 
 ## Branches and releases
 

@@ -87,4 +87,4 @@ Report plainly: what changed, what was verified and how, what was not run, and t
 | Bot client (`bot.ts`) | As above with discord.js replaced by a fake: Gateway events, login failures and retries, interactions, destroy |
 | Idling state machine, timers, Steam session | Scripted checks of every guard path reachable offline, plus a live checklist for the user |
 
-Offline tests use the harness in [docs/development.md](docs/development.md#offline-test-harness). Live tests are the user's to run: hand over the matching checklist from [docs/live-tests.md](docs/live-tests.md), adding one there for a new feature.
+Offline tests live in `test/` and run with `npx pnpm@10.34.6 test`; the harness is in [docs/development.md](docs/development.md#offline-test-harness). Live tests are the user's to run: hand over the matching checklist from [docs/live-tests.md](docs/live-tests.md), adding one there for a new feature.
