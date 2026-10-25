@@ -1,7 +1,7 @@
-// Steam protocol cap on simultaneous appids per gamesPlayed call
+// Steam accepts at most this many appids in one gamesPlayed call, so no
+// selection may grow past it.
 export const MAX_IDLE_GAMES = 32;
 
-// Headless mode never touches stdin (no keyboard, no spinner stdin discarding):
-// a backgrounded `steamidler --headless &` would otherwise be stopped by SIGTTOU
-// the moment something calls setRawMode.
+// Set once at start-up. In headless mode nothing may put stdin into raw mode:
+// a process running in the background gets SIGTTOU for it and is stopped.
 export const IS_HEADLESS = process.argv.includes('--headless');

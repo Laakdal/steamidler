@@ -1,10 +1,8 @@
-import { existsSync, readFileSync, mkdirSync, chmodSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { existsSync, readFileSync, chmodSync } from 'node:fs';
 import { writeFileAtomic } from '../storage/atomicWrite.js';
+import { dataPath, ensureDataDir } from '../storage/paths.js';
 
-export const CONFIG_DIR = join(homedir(), '.steam-idler');
-export const CONFIG_PATH = join(CONFIG_DIR, 'discord.json');
+export const CONFIG_PATH = dataPath('discord.json');
 
 export interface BotConfig {
   token: string;
@@ -24,11 +22,6 @@ export interface DiscordConfig {
 
 const WEBHOOK_HOSTS = new Set(['discord.com', 'discordapp.com', 'canary.discord.com', 'ptb.discord.com']);
 const WEBHOOK_PATH = /^\/api\/(?:v\d+\/)?webhooks\/\d+\/[\w-]+\/?$/;
-
-// Creates ~/.steam-idler on first write
-export function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-}
 
 // Guards every ID field so a hand-edited file cannot smuggle odd values into URLs
 export function isSnowflake(value: unknown): value is string {
@@ -122,7 +115,7 @@ export function loadDiscordConfig(): DiscordConfig | null {
 // Writes the file; a read-only config dir is reported and returns false, never throws
 function writeConfigFile(contents: Record<string, unknown>): boolean {
   try {
-    ensureConfigDir();
+    ensureDataDir();
     writeFileAtomic(CONFIG_PATH, JSON.stringify(contents, null, 2), 0o600);
     return true;
   } catch (err) {

@@ -1,7 +1,7 @@
 import { readFileSync, existsSync, renameSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename } from 'node:path';
 import { writeFileAtomic } from './atomicWrite.js';
-import { CONFIG_DIR, ensureConfigDir, loadFavorites } from './favorites.js';
+import { dataPath, ensureDataDir } from './paths.js';
 import { MAX_IDLE_GAMES } from '../constants.js';
 import type { GameSelection } from '../types/index.js';
 
@@ -14,7 +14,7 @@ export interface LoadedSelection {
 
 // Path of the account's selection file, keyed like the old favorites file
 export function selectionPath(accountName: string): string {
-  return join(CONFIG_DIR, `selection-${accountName}.json`);
+  return dataPath(`selection-${accountName}.json`);
 }
 
 // Keeps the first MAX_IDLE_GAMES valid, unique entries; each dropped one logs a line.
@@ -89,6 +89,23 @@ function loadSaved(accountName: string, log: (line: string) => void): GameSelect
   });
 }
 
+// The appid list an older version kept as favorites, read only to seed the
+// selection once. null when the file is absent or its list is not an array;
+// a file that does not parse counts as an empty list.
+function readOldFavorites(fileName: string): unknown[] | null {
+  const filePath = dataPath(fileName);
+  if (!existsSync(filePath)) return null;
+  let data: unknown;
+  try {
+    data = JSON.parse(readFileSync(filePath, 'utf-8'));
+  } catch {
+    return [];
+  }
+  const list = (data as { favorites?: unknown } | null)?.favorites;
+  if (!list) return [];
+  return Array.isArray(list) ? list : null;
+}
+
 // Loads the saved selection, falling back to the old favorites file (read-only
 // migration). null means neither file is usable.
 export function loadSelection(accountName: string, log: (line: string) => void = console.log): LoadedSelection | null {
@@ -96,9 +113,8 @@ export function loadSelection(accountName: string, log: (line: string) => void =
   if (saved) return { games: saved, source: 'saved' };
 
   const favFile = `favorites-${accountName}.json`;
-  if (!existsSync(join(CONFIG_DIR, favFile))) return null;
-  const favorites = loadFavorites(accountName) as unknown;
-  if (!Array.isArray(favorites)) return null;
+  const favorites = readOldFavorites(favFile);
+  if (!favorites) return null;
   const games = cleanEntries(favorites, favFile, log, (appid) => ({ appid, name: `App ${String(appid)}` }));
   return { games, source: 'favorites' };
 }
@@ -107,7 +123,7 @@ export function loadSelection(accountName: string, log: (line: string) => void =
 export function saveSelection(accountName: string, games: GameSelection[]): boolean {
   const filePath = selectionPath(accountName);
   try {
-    ensureConfigDir();
+    ensureDataDir();
     const data = { version: SELECTION_VERSION, savedAt: new Date().toISOString(), games };
     writeFileAtomic(filePath, JSON.stringify(data, null, 2));
     return true;

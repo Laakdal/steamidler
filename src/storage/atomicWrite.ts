@@ -1,20 +1,17 @@
-import { writeFileSync, renameSync, unlinkSync } from 'node:fs';
+import { renameSync, rmSync, writeFileSync } from 'node:fs';
 
-// Writes via a temp file + rename so a kill mid-write can never leave a
-// half-written config behind (a truncated credentials.json would otherwise
-// brick the next headless start).
-export function writeFileAtomic(filePath: string, contents: string, mode?: number): void {
-  const tmpPath = `${filePath}.${process.pid}.tmp`;
+// Replaces a file in one step. The data goes to a sibling temp file that is
+// then renamed over the target, so a crash or kill part-way leaves the old
+// file or the new one, never a truncated one that would break the next start.
+// `mode` sets the permissions on Linux (0600 for files holding a secret).
+export function writeFileAtomic(target: string, data: string, mode?: number): void {
+  const temp = `${target}.tmp-${process.pid}`;
   try {
-    writeFileSync(tmpPath, contents, { encoding: 'utf-8', mode });
-    renameSync(tmpPath, filePath);
+    writeFileSync(temp, data, { encoding: 'utf-8', mode });
+    renameSync(temp, target);
   } catch (err) {
-    // Never leave a stray copy (it may hold a token) next to the real file
-    try {
-      unlinkSync(tmpPath);
-    } catch {
-      // nothing to clean up
-    }
+    // The temp copy may hold a token: remove it before passing the error on
+    rmSync(temp, { force: true });
     throw err;
   }
 }

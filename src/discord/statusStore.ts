@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { writeFileAtomic } from '../storage/atomicWrite.js';
-import { CONFIG_DIR, ensureConfigDir, isSnowflake } from './config.js';
+import { dataPath, ensureDataDir } from '../storage/paths.js';
+import { isSnowflake } from './config.js';
 
-export const STATUS_PATH = join(CONFIG_DIR, 'discord-status.json');
+export const STATUS_PATH = dataPath('discord-status.json');
 
 export interface StatusMessageRef {
   channelId: string;
@@ -30,7 +30,7 @@ export function loadStatusMessage(): StatusMessageRef | null {
 // Never throws: losing this file only means the next start posts a new box
 export function saveStatusMessage(ref: StatusMessageRef): boolean {
   try {
-    ensureConfigDir();
+    ensureDataDir();
     writeFileAtomic(STATUS_PATH, JSON.stringify({ channelId: ref.channelId, messageId: ref.messageId }, null, 2), 0o600);
     return true;
   } catch (err) {

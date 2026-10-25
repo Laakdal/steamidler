@@ -8,7 +8,7 @@ import { createFakeNotifier } from './fake/notifier.mjs';
 import { installFakeStdin, restoreStdin } from './fake/stdin.mjs';
 import { stripVTControlCharacters } from 'node:util';
 
-// credentials.js, favorites.js and selection.js fix their paths at import time
+// credentials.js and selection.js fix their paths at import time
 const home = tempHome();
 const configDir = path.join(home, '.steam-idler');
 const credentialsFile = path.join(configDir, 'credentials.json');
