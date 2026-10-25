@@ -15,6 +15,8 @@ src/
   constants.ts              MAX_IDLE_GAMES (32), IS_HEADLESS
   steam/client.ts           SteamClient wrapper around steam-user (gamesPlayed, events, reconnect tracking)
   steam/auth.ts             QR / credentials / stored-token login (steam-session)
+  steam/resume.ts           Resume: waiting after a disconnect or kick, logging back on, the paused/resumed notices
+  steam/flush.ts            Flush: the 4-hour flush relog, the zombie watchdog and the post-takeover drift check
   storage/                  ~/.steam-idler files: credentials, favorites, atomic writes
   discord/config.ts         discord.json load (validated every time) and save
   discord/format.ts         markdown escaping and 2000-character splitting

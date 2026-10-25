@@ -21,7 +21,8 @@ How much testing a change needs is in `CLAUDE.md` §5. This is how to write and 
 - `test/helpers.mjs` has `dist(relPath)`, the file URL of `dist/<relPath>` for a dynamic import, and `tempHome()`, which makes a temp home with `.steam-idler/` inside and points `HOME` and `USERPROFILE` at it.
 - Config paths are computed at import time: call `tempHome()` **before** the dynamic imports.
 - Mock the network by assigning `globalThis.fetch`. A mock that simulates a hang rejects when `init.signal` aborts.
-- `test/fake/` replaces discord.js with a fake module through a Node resolve hook (`module.register`, loaded with `node --import ./test/fake/register.mjs`), so no test opens a Gateway connection.
+- `test/fake/` replaces discord.js, steam-user and steam-session with fake modules through a Node resolve hook (`module.register`, loaded with `node --import ./test/fake/register.mjs`), so no test opens a Gateway or Steam connection.
+- For modules that take the shared `Runtime`, `test/fake/steamClient.mjs` (`createFakeClient()`) and `test/fake/notifier.mjs` (`createFakeNotifier()`) stand in for our own `SteamClient` and `DiscordNotifier`: settable flags, recorded calls and handlers the test fires. Drive their timers with `mock.timers` (`setTimeout`, `setInterval`, `Date`), and let an awaited login or probe settle with a real `setImmediate` after each tick.
 - The script runs with `--test-concurrency=1`: the notifier's timeout tests assert tight wall-clock bounds and can fail when files run in parallel.
 - `.github/workflows/ci.yml` runs the same `test` script on Ubuntu with Node 22 for every push to `main` or `dev` and every pull request. Its action versions are pinned by commit SHA.
 
