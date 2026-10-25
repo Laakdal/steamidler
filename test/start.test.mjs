@@ -279,6 +279,7 @@ test('interactive start saves what the picker returns', async () => {
     const run = pickAndStart(app);
     for (let i = 0; i < 20 && stdin.listenerCount('keypress') === 0; i++) await settle();
     assert.equal(stdin.listenerCount('keypress'), 1);
+    assert.ok(logged().includes('Saved but not in your library right now: Gone Game; kept, retried at the next start.'));
     // Rows: g10, Gone Game (Selected), then g20, g30. Tick g20 and start.
     stdin.press('down');
     stdin.press('down');

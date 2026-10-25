@@ -267,6 +267,8 @@ export async function pickAndStart(app: App): Promise<void> {
 
   // No saved selection (or an empty one) opens the picker with nothing ticked
   const saved = loadStartSelection(rt);
+  // The picker clears the screen and marks them, but the line stays in scrollback and piped logs
+  if (saved) announceMissing(rt, saved.games);
   const { selectedGames, aborted } = await selectGames(rt.library.games, saved?.games ?? [], false);
 
   if (aborted) {
