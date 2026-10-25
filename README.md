@@ -8,16 +8,18 @@ Inspired by [steamidled](https://github.com/louisraetz/steamidled) by louisraetz
 
 - Log in with a QR code from the Steam mobile app, or with username, password and Steam Guard
 - Idle up to 32 games at once (the Steam limit), including free and family-shared games
+- Remembers your selected games across restarts and updates; `/add` and `/remove` change the saved list too
 - Pauses automatically while you play on another device and resumes afterwards
 - Reconnects on its own after connection drops, Steam outages and session takeovers
 - Renews the saved login token so a long-running session keeps working
 - Optional Discord bot: notifications for start, pause, resume and stop events plus a daily report, and `/add`, `/remove` and `/status` commands to change what is idling from your phone
 - A backup Discord webhook that takes over the notifications if the bot goes down
+- An optional live status box in Discord: one message that always shows what is idling
 - Headless mode for running as a systemd service
 
 ## Requirements
 
-- Node.js 18.17 or later (22 recommended)
+- Node.js 20.12 or later (22 recommended)
 - A Steam account
 - The Steam mobile app, for QR login (optional)
 
@@ -32,7 +34,7 @@ npx pnpm@10.34.6 install --frozen-lockfile --ignore-scripts
 npx pnpm@10.34.6 build
 ```
 
-The compiled CLI is `dist/index.js`. Releases are listed on the [Releases page](https://github.com/Laakdal/steamidler/releases), and [CHANGELOG.md](CHANGELOG.md) says what changed in each. `main` may hold unreleased work.
+The compiled CLI is `dist/index.js`. Releases are listed on the [Releases page](https://github.com/Laakdal/steamidler/releases), and [CHANGELOG.md](CHANGELOG.md) says what changed in each. `main` and `dev` may hold unreleased work; this README describes `dev`.
 
 ## Usage
 
@@ -59,6 +61,8 @@ Game selector:
 | `/` | Search by name (`Esc` clears) |
 | `Enter` | Start idling |
 | `Esc` | In edit mode, return to idling without changes |
+
+Saved games that are not in your library right now are listed as "(not in library)" and can be unticked. The selector refuses a 33rd game, `Enter` needs at least one game from your library, and `Ctrl+C` quits.
 
 While idling:
 
@@ -246,7 +250,7 @@ This unit file has not yet been tested on a live server.
 ```bash
 npx pnpm@10.34.6 install --frozen-lockfile --ignore-scripts
 npx pnpm@10.34.6 build    # Type-check and compile to dist/
-npm run dev               # Build, then start interactive mode
+npx pnpm@10.34.6 dev      # Build, then start interactive mode
 ```
 
 The project is TypeScript (ES modules, strict mode) with an offline test suite in `test/` (`npx pnpm@10.34.6 test`), which GitHub runs on every push to `main` and `dev`. How the code is laid out is in [docs/architecture.md](docs/architecture.md), how to build, test and release in [docs/development.md](docs/development.md), and project rules in [AGENTS.md](AGENTS.md). [docs/status.md](docs/status.md) and [docs/roadmap.md](docs/roadmap.md) say where the project stands and what may come next. Security: [SECURITY.md](SECURITY.md) for the overview and reporting, [SECURITY-AUDIT.md](SECURITY-AUDIT.md) for the full audit. Background notes on Steam behavior are in [docs/](docs/).
