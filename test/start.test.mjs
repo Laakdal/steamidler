@@ -83,7 +83,7 @@ function setup(over = {}) {
   const resume = new Resume(rt, flush, view);
   const editMode = createEditMode(rt, view, report);
   const controlPanel = createControlPanel(rt, report);
-  const app = { rt, client, discord, view, report, flush, resume, shutdown, editMode, controlPanel, installProcessHandlers() {} };
+  const app = { rt, client, discord, view, report, flush, resume, shutdown, editMode, controlPanel, installHandlers() {} };
   apps.push(app);
   return { app, rt, client, discord, exits };
 }
