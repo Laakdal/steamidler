@@ -1,4 +1,71 @@
 import type { IdlingGame } from '../types/index.js';
+import type { Runtime } from '../runtime.js';
+import { isFrozen } from '../runtime.js';
+
+function msUntilNextMidnight(): number {
+  const next = new Date();
+  next.setDate(next.getDate() + 1);
+  next.setHours(0, 0, 0, 0);
+  return next.getTime() - Date.now();
+}
+
+// The midnight Discord report and the day-start snapshot its "today" gain is
+// measured from.
+export class DailyReport {
+  private dayStartAccumulatedMs = new Map<number, number>();
+
+  // Takes the shared runtime the report reads the games from
+  constructor(private readonly rt: Runtime) {}
+
+  // Takes today's baseline and arms the midnight report; startIdling calls it once
+  start(): void {
+    this.snapshotDayStart();
+    this.scheduleDailyReport();
+  }
+
+  private scheduleDailyReport(): void {
+    const rt = this.rt;
+    rt.timers.timeout('midnight', () => {
+      // Fires just after midnight but reports on the day that ended
+      const endedDay = new Date();
+      endedDay.setDate(endedDay.getDate() - 1);
+      const report = formatDailyReport(
+        rt.session.idling,
+        rt.session.paused,
+        this.dayStartAccumulatedMs,
+        endedDay,
+        isFrozen(rt)
+      );
+      rt.discord.send(report);
+      this.snapshotDayStart();
+      this.scheduleDailyReport();
+    }, msUntilNextMidnight());
+  }
+
+  // Captures each game's current accumulated playtime for tomorrow's "today gain"
+  // calculation. Only idling games have a live delta; user-paused
+  // games are frozen at accumulatedMs (their startTime is stale by design).
+  snapshotDayStart(): void {
+    const rt = this.rt;
+    this.dayStartAccumulatedMs.clear();
+    const now = Date.now();
+    const frozen = isFrozen(rt);
+    for (const game of rt.session.idling) {
+      const live = frozen
+        ? game.accumulatedMs
+        : game.accumulatedMs + (now - game.startTime.getTime());
+      this.dayStartAccumulatedMs.set(game.appid, live);
+    }
+    for (const game of rt.session.paused) {
+      this.dayStartAccumulatedMs.set(game.appid, game.accumulatedMs);
+    }
+  }
+
+  // Drops the day-start snapshot of games installSelection created
+  forget(appids: number[]): void {
+    for (const appid of appids) this.dayStartAccumulatedMs.delete(appid);
+  }
+}
 
 // Builds the daily Discord report. Pure formatter — no side effects. `date`
 // only labels the report (the day that ended); all arithmetic uses `nowMs`.
