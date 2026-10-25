@@ -1,208 +1,109 @@
 # steamidler
 
-A command-line Steam game idler. It logs in to your Steam account and reports up to 32 games as being played, so they accumulate playtime and trading card drops without the games running. It can be used interactively or as a headless background service.
+steamidler tells Steam you are playing up to 32 of your games at once, so they collect playtime and trading card drops while none of them runs. Use it in a terminal, or leave it running as a background service on a server.
 
 Inspired by [steamidled](https://github.com/louisraetz/steamidled) by louisraetz.
 
-## Features
+## Quick start
 
-- Log in with a QR code from the Steam mobile app, or with username, password and Steam Guard
-- Idle up to 32 games at once (the Steam limit), including free and family-shared games
-- Remembers your selected games across restarts and updates; `/add` and `/remove` change the saved list too
-- Pauses automatically while you play on another device and resumes afterwards
-- Reconnects on its own after connection drops, Steam outages and session takeovers
-- Renews the saved login token so a long-running session keeps working
-- Optional Discord bot: notifications for start, pause, resume and stop events plus a daily report, and `/add`, `/remove` and `/status` commands to change what is idling from your phone
-- A backup Discord webhook that takes over the notifications if the bot goes down
-- An optional live status box in Discord: one message that always shows what is idling
-- Headless mode for running as a systemd service
-
-## Requirements
-
-- Node.js 20.12 or later (22 recommended)
-- A Steam account
-- The Steam mobile app, for QR login (optional)
-
-## Installation
-
-This project is not published to npm. Build a release from source:
+You need Node.js 20.12 or later (22 recommended) and a Steam account.
 
 ```bash
-git clone --branch v0.1.0 https://github.com/Laakdal/steamidler.git
+git clone --branch dev https://github.com/Laakdal/steamidler.git
 cd steamidler
 npx pnpm@10.34.6 install --frozen-lockfile --ignore-scripts
 npx pnpm@10.34.6 build
+node dist/index.js
 ```
 
-The compiled CLI is `dist/index.js`. Releases are listed on the [Releases page](https://github.com/Laakdal/steamidler/releases), and [CHANGELOG.md](CHANGELOG.md) says what changed in each. `main` and `dev` may hold unreleased work; this README describes `dev`.
+Log in (the QR code needs the Steam mobile app), tick games with `Space`, press `Enter`. From then on it remembers both your login and your games. Releases are on the [Releases page](https://github.com/Laakdal/steamidler/releases) and [CHANGELOG.md](CHANGELOG.md) lists what changed; `main` and `dev` can be ahead of them, and this README describes `dev`.
 
-## Usage
+## Features
+
+- Up to 32 games at once (Steam's limit), free and family-shared ones included
+- Login by QR code, or by username, password and Steam Guard; the login is saved and renewed so it keeps working
+- Your game list is saved on every change and comes back after a restart or an update
+- Stops counting while you play on another device, and picks up again when you stop
+- Reconnects by itself after network drops, Steam outages and session takeovers
+- Optional Discord bot: notifications, a daily report, a live status message, and `/add`, `/remove` and `/status` to change what idles from your phone
+- Runs headless under systemd
+
+## Using it
 
 ```bash
-node dist/index.js                   # Interactive mode: log in, pick games, idle
-node dist/index.js --headless        # Log in with the saved token and idle your saved games
-node dist/index.js --setup-discord   # (Re)configure the Discord bot and backup webhook
+node dist/index.js                   # Interactive: log in, pick games, idle
+node dist/index.js --headless        # Background: saved login, saved games, no prompts
+node dist/index.js --setup-discord   # Set up or change the Discord bot and backup webhook
 node dist/index.js --logout          # Forget the saved Steam login
 node dist/index.js --version         # Print the version
-node dist/index.js --help            # Show all options
+node dist/index.js --help            # List the options
 ```
 
 ### Interactive mode
 
-Choose a login method, select games in the selector, and press `Enter` to start idling. The login is saved, so later runs can reuse it. So is your selection: it is saved whenever it changes, and the selector opens with it ticked and listed first under "Selected".
+Pick a login method, choose games in the picker, and press `Enter`. The picker opens with your saved games ticked at the top, under SELECTED.
 
-Game selector:
+| Where | Key | What it does |
+|---|---|---|
+| Picker | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Move |
+| Picker | `Space` | Tick or untick a game |
+| Picker | `T` | Show all, owned, free or family-shared games |
+| Picker | `/` | Search by name; `Esc` clears the search |
+| Picker | `Enter` | Start idling (or apply the change, while editing) |
+| Picker | `Esc` | While editing: go back without changes |
+| Idling | `E` | Open the picker to change the games |
+| Idling | `Q` or `Ctrl+C` | Quit |
 
-| Key | Action |
-|-----|--------|
-| `↑` `↓`, `PgUp` `PgDn`, `Home` `End` | Move through the list |
-| `Space` | Select or deselect a game |
-| `T` | Filter by source: all, owned, free, family-shared |
-| `/` | Search by name (`Esc` clears) |
-| `Enter` | Start idling |
-| `Esc` | In edit mode, return to idling without changes |
-
-Saved games that are not in your library right now are listed as "(not in library)" and can be unticked. The selector refuses a 33rd game, `Enter` needs at least one game from your library, and `Ctrl+C` quits.
-
-While idling:
-
-| Key | Action |
-|-----|--------|
-| `E` | Edit the selection |
-| `Q` | Quit |
-| `Ctrl+C` | Quit immediately |
+A saved game that is not in your library right now (a family-shared game that was taken back, say) shows as "(not in library)". It stays in your list and is tried again at the next start, or you can untick it. The picker refuses a 33rd game, and `Enter` needs at least one game that is in your library.
 
 ### Headless mode
 
-`--headless` logs in with the saved token and idles the saved selection (at most 32 games). Run the program interactively once first to log in and pick games with `Space`. After that, restarts and updates need no interactive run. A saved game that is missing from your library at start (a family-shared game, for example) is kept and checked again at the next start.
+`--headless` logs in with the saved token and idles your saved games without asking anything. Run steamidler interactively once first, to log in and pick the games.
 
-A network error or Steam rate limit at startup keeps the saved login; only an expired or revoked token requires logging in again. Exit codes:
+A start that fails because of the network or a Steam rate limit keeps the saved login; only a token Steam no longer accepts has to be replaced by logging in again. The exit code says whether a restart can help:
 
 | Code | Meaning |
 |------|---------|
-| `0` | Stopped cleanly |
-| `1` | Transient failure; restarting may help |
-| `2` | Configuration or account problem (no saved login, no games selected, expired or revoked token, banned account, protocol mismatch); restarting will not help |
+| `0` | Stopped normally |
+| `1` | Something passing went wrong; a restart may help |
+| `2` | Needs you: no saved login, no games picked, a dead token, an account problem, or a Steam version mismatch |
 
-## How idling works
+## How it keeps your hours counting
 
-While another device plays a game on the same account, Steam blocks idling for the whole session; steamidler pauses the clocks and resumes when the other session ends. Every 4 hours it briefly logs off and on again so Steam commits the accumulated playtime, and it periodically checks that server-side playtime is actually increasing.
+- **Another device playing:** Steam ignores every idled game while someone plays on the account. steamidler stops its clocks and carries on when the other session ends.
+- **Every 4 hours** it logs off and straight back on. Steam writes the playtime of a session when it ends cleanly, so a session that went bad can never lose more than those 4 hours.
+- **Every 90 minutes** it checks that Steam's count for one of the games has grown, and logs on afresh if it has not.
+- **Disconnects:** it retries with growing pauses. It gives up after 30 failed tries, after 10 rate-limited ones, or at once on an error that retrying cannot fix.
 
-After a disconnect it keeps retrying with exponential backoff. It stops after 30 failed reconnects, 10 rate-limited attempts, or an error that retrying cannot fix.
+The research behind this is in [docs/steam-playtime-research.md](docs/steam-playtime-research.md).
 
-## Discord bot (optional)
+## Running 24/7 on a Linux server
 
-A Discord bot of your own posts the notifications to a channel and lets you change what is idling with slash commands. An optional backup webhook keeps the notifications coming if the bot goes down.
-
-### Set it up
-
-1. Open the [Discord Developer Portal](https://discord.com/developers/applications), click **New Application**, open its **Bot** page, click **Reset Token** and copy the token. No privileged intents are needed.
-2. Optional, recommended: in your server, open **Server Settings → Integrations → Webhooks**, create a webhook, and copy its URL. This is the backup route.
-3. Run `node dist/index.js --setup-discord` and paste the token. Typed secrets are masked.
-4. Open the invite link it prints and add the bot to your server. The link asks only for View Channel, Send Messages and Embed Links. If the bot was not in a server yet, run `--setup-discord` again after inviting it.
-5. Pick the server, the notification channel and, optionally, a channel for the [live status box](#live-status-box), then paste the backup webhook URL or press Enter to skip.
-
-Setup posts a test message through the bot (and through the webhook, if given), registers the commands, and places the status box if you picked a channel for it. It saves the settings only if all of that works. The first interactive run also offers setup; declining stores `{ "disabled": true }` so the prompt does not come back. A config from an earlier version with only a webhook keeps working as notifications only.
-
-### Commands
-
-| Command | What it does |
-|---------|--------------|
-| `/add game:` | Starts idling a game from your library. Type part of its name and pick it from the list. |
-| `/remove game:` | Stops idling one of the selected games. |
-| `/status` | Lists what is idling, paused games, and a Steam disconnect if there is one. |
-
-- **Only you.** Commands work only for the application's owner (for a team-owned application, the member picked at setup), and only in the chosen server. Anyone else gets "not allowed". Discord also hides the commands from members who are not server admins.
-- **Replies are private.** Only you see them.
-- **Changes are saved.** `/add` and `/remove` change the saved selection, so the games are still idling after a restart.
-- **Limits:** at most 32 games, and at least one stays selected. A change is refused while the game selector is open on the computer, while steamidler is disconnected from Steam, and before idling has started.
-- The bot comes online when idling starts. Run one steamidler per bot token at a time: two copies would both answer every command.
-
-### Live status box
-
-One message in a channel of its own that shows what steamidler is doing right now, edited in place instead of posted again:
-
-- A coloured bar and a status line:
-  - 🟢 idling;
-  - 🟡 waiting to resume after a disconnect, or paused while a game is played on this account elsewhere;
-  - 🛑 stopped.
-- "Next update in …", counting down on your device. If the box stops updating (the server is down, the token was reset), it reads "… ago" instead, so a stale box shows itself.
-- Sections for 🎮 idling games (total hours and time gained this session) and ⏸️ paused games.
-
-It updates every minute, and within about 5 seconds of `/add`, `/remove`, a disconnect or a resume. A restart keeps editing the same message; if you delete it, a new one appears within a minute. When steamidler stops, the box turns red.
-
-To turn it on, run `--setup-discord` again, pick a channel at **Live status channel** (an empty one, so notifications don't push the box out of view), then restart steamidler. The bot needs **Embed Links** in that channel: the invite link asks for it, and setup stops with a message naming the fix if Discord refuses or hides the box. At runtime the same problem is logged once. A bot invited before this feature needs Embed Links added to its role, or the new invite link opened again.
-
-### Messages
-
-| Message | When |
-|---------|------|
-| ▶️ Idling started | Idling begins, with the game count |
-| ⏸️ Idling paused | A disconnect or session takeover lasts longer than 30 seconds |
-| ▶️ Idling resumed | The reconnection has held for 90 seconds |
-| 🔄 flush | The 4-hourly relog that commits playtime |
-| ⚠️ Zombie session | Steam stopped crediting playtime and a reconnect is forced |
-| 📊 Daily idling report | Local midnight: playtime gained per game |
-| 🛑 Idling stopped | Quit, crash, unrecoverable error, or a failed headless start |
-| ⚠️ Discord bot offline | Sent through the backup webhook when the bot's token is rejected, it loses access to the channel, or it has been disconnected from Discord for 2 minutes. Notifications keep coming through the webhook. |
-| ✅ Discord bot back online | The bot reconnected after an outage; commands work again |
-| ⚠️ Could not save the game selection | A change to the selection could not be written to `~/.steam-idler/`. Idling carries on, but a restart would forget the change. Sent once until a save works again. See the [runbook](docs/runbook.md#when-it-stops) |
-
-Messages are plain text with mentions disabled; long reports are split to fit Discord's 2000-character limit. Without a backup webhook, notifications the bot cannot deliver go to the console (the systemd journal when running as a service).
-
-If the offline notice says the token was rejected, reset the token in the Developer Portal, run `--setup-discord` with the new one, and restart steamidler.
-
-### Keep the token and webhook secret
-
-- The **bot token** controls the bot account: whoever has it can read and post wherever the bot is. It still cannot change your idling, because steamidler checks your user ID itself. To revoke it, click **Reset Token** in the Developer Portal.
-- The **webhook URL** works like a password for posting to its channel. To revoke it, delete the webhook in Discord. Put it in a private channel.
-- Never paste either one into a chat, an issue or a screenshot.
-
-## Configuration
-
-All state is stored in `~/.steam-idler/`:
-
-```
-~/.steam-idler/
-├── credentials.json          # Saved Steam login token
-├── selection-<account>.json  # The selected games, saved on every change
-├── discord.json              # Discord bot token, IDs, optional backup webhook
-└── discord-status.json       # Which message is the live status box (no secrets)
-```
-
-An older `favorites-<account>.json` is read once, only when there is no `selection-<account>.json` yet, and its games become the starting selection; the file is then left alone. A selection file that cannot be read is renamed to `selection-<account>.json.invalid`, and steamidler starts as if there were no selection file: from the old favorites file if it is still there, otherwise with nothing selected.
-
-`credentials.json` and `discord.json` contain secrets in plain text and are written with owner-only permissions on Linux. Do not share or commit them.
-
-## Running 24/7 on a Linux VPS
-
-steamidler only makes outgoing connections (to Steam and Discord), so the server's firewall can stay closed to everything except SSH.
+steamidler only connects out, to Steam and Discord, so the firewall can stay closed except for SSH.
 
 1. Install Node.js 22 and git.
-2. Clone and build as your admin user:
+2. Get and build it as your admin user:
 
    ```bash
-   sudo git clone --branch v0.1.0 https://github.com/Laakdal/steamidler.git /opt/steamidler
+   sudo git clone --branch dev https://github.com/Laakdal/steamidler.git /opt/steamidler
    cd /opt/steamidler
    sudo npx pnpm@10.34.6 install --frozen-lockfile --ignore-scripts
    sudo npx pnpm@10.34.6 build
    ```
 
-3. Create a dedicated user without admin rights to run it:
+3. Add a user without admin rights for it:
 
    ```bash
    sudo useradd --system --create-home steamidler
    ```
 
-4. Run it interactively once as that user, over SSH: log in with the QR code shown in the terminal, accept the offer to set up Discord, pick your games with `Space`, start idling with `Enter`, then quit with `Q`. The selection is saved, so the service resumes it on every start.
+4. Run it once as that user over SSH: scan the QR code in the terminal, say yes to the Discord setup if you want it, tick your games with `Space`, press `Enter`, then quit with `Q`. This also creates `~/.steam-idler`, which the service needs.
 
    ```bash
    sudo -u steamidler -H node /opt/steamidler/dist/index.js
    ```
 
-   To set up or change Discord later, run the same command with `--setup-discord`.
-
-5. Create `/etc/systemd/system/steamidler.service`:
+5. Save this as `/etc/systemd/system/steamidler.service`, with your time zone in place of `Region/City` (for example `Asia/Jakarta`; the daily report goes out at local midnight) and the path from `which node`:
 
    ```ini
    [Unit]
@@ -215,13 +116,12 @@ steamidler only makes outgoing connections (to Steam and Discord), so the server
    User=steamidler
    WorkingDirectory=/opt/steamidler
    ExecStart=/usr/bin/node /opt/steamidler/dist/index.js --headless
-   # Your time zone: the daily report is sent at local midnight
    Environment=TZ=Region/City
    Restart=on-failure
    RestartSec=10
    # Exit code 2 means a restart cannot fix the problem
    RestartPreventExitStatus=2
-   # Hardening: read-only system, writable only where steamidler and steam-user keep their files
+   # Read-only system; writable only where steamidler and steam-user keep their files
    NoNewPrivileges=yes
    PrivateTmp=yes
    ProtectSystem=strict
@@ -232,32 +132,112 @@ steamidler only makes outgoing connections (to Steam and Discord), so the server
    WantedBy=multi-user.target
    ```
 
-   Replace `Region/City` (for example `Asia/Jakarta`) and check the Node.js path with `which node`. `~/.steam-idler` must exist before the service starts; step 4 creates it.
-
-6. Enable and start it:
+6. Start it, now and at every boot:
 
    ```bash
    sudo systemctl daemon-reload
    sudo systemctl enable --now steamidler
    ```
 
-Everyday commands, updating, rolling back, and what to do when it stops or a secret leaks are in the [runbook](docs/runbook.md).
+The [runbook](docs/runbook.md) covers the everyday commands, updating, and what to do when it stops or a secret leaks. This unit has not been tested on a live server yet.
 
-This unit file has not yet been tested on a live server.
+## Discord (optional)
+
+Your own Discord bot posts what steamidler is doing to a channel and takes commands from you. A webhook can stand by as a backup that keeps the notifications coming when the bot is down.
+
+### Setting it up
+
+1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application, open **Bot**, click **Reset Token** and copy the token. No privileged intents are needed.
+2. Optional, and worth it: in your server, **Server Settings → Integrations → Webhooks**, create a webhook and copy its URL. This is the backup.
+3. Run `node dist/index.js --setup-discord` and paste the token (what you type is masked).
+4. Open the invite link it prints to add the bot to your server. It asks only for View Channel, Send Messages and Embed Links. If the bot was in no server yet, run `--setup-discord` again afterwards.
+5. Choose the server, the channel for notifications, and optionally a channel for the [live status box](#live-status-box). Paste the webhook URL, or press Enter to skip it.
+
+Setup sends a test message through the bot (and the webhook), registers the commands and places the status box, and saves the settings only when all of that worked. The first interactive run offers the setup too; saying no is remembered (`{ "disabled": true }`), so it does not ask again. Settings with only a webhook keep working, as notifications without commands.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `/add game:` | Starts idling a game from your library: type part of the name and pick it |
+| `/remove game:` | Stops idling one of your games |
+| `/status` | Shows what is idling, what is paused, and a Steam disconnect if there is one |
+
+- Only you can use them: the application's owner (on a team application, the member chosen at setup), in the chosen server. Anyone else is told they are not allowed, and Discord hides the commands from members who are not admins.
+- Replies are visible only to you.
+- Changes are saved, so they survive a restart.
+- At most 32 games, and at least one stays. A change is refused while the picker is open on the computer, while Steam is disconnected, and before idling has started.
+- The bot goes online when idling starts. Use one bot token for one running steamidler: two would both answer every command.
+
+### Live status box
+
+One message in its own channel, edited in place, that shows what steamidler is doing:
+
+- a coloured status: 🟢 idling, 🟡 waiting after a disconnect or paused for another device, 🛑 stopped;
+- "Next update in …", counted down on your device. If updates stop (the server is down, the token was reset) it turns into "… ago", so a stale box is easy to spot;
+- 🎮 the idling games, with total hours and the time gained this run, and ⏸️ the paused ones.
+
+It updates every minute, and within about 5 seconds of `/add`, `/remove`, a disconnect or a resume. A restart keeps using the same message, a deleted one comes back within a minute, and the box turns red when steamidler stops.
+
+To switch it on, run `--setup-discord`, pick an empty channel at **Live status channel** (so notifications don't push the box away), and restart steamidler. The bot needs **Embed Links** in that channel. Setup says how to fix it if that is missing, and a running steamidler logs it once. A bot invited before the status box existed needs Embed Links added to its role, or the new invite link opened.
+
+### Messages
+
+| Message | Sent when |
+|---|---|
+| ▶️ Idling started | Idling begins, with the number of games |
+| ⏸️ Idling paused | A disconnect or takeover has lasted 30 seconds |
+| ▶️ Idling resumed | The connection has been back for 90 seconds |
+| 🔄 flush | The 4-hourly relog has committed the playtime |
+| ⚠️ Zombie session | Steam stopped counting the playtime, and a fresh logon is forced |
+| 📊 Daily idling report | Local midnight: what each game gained that day |
+| 🛑 Idling stopped | You quit, it crashed, an error cannot be fixed by retrying, or a headless start failed |
+| ⚠️ Discord bot offline | Through the backup webhook: the bot's token was rejected, it lost access to the channel, or it has been cut off from Discord for 2 minutes. Notifications carry on through the webhook. |
+| ✅ Discord bot back online | The bot is connected again; commands work again |
+| ⚠️ Could not save the game selection | A change could not be written to `~/.steam-idler/`. Idling carries on, but a restart would lose the change. Sent once until a save works; the [runbook](docs/runbook.md#when-it-stops) has the fix. |
+
+Messages are plain text, never ping anyone, and long ones are split at Discord's 2000-character limit. Without a webhook, a message the bot cannot deliver goes to the console (the systemd journal, for the service). If the bot's token was rejected: reset it in the Developer Portal, run `--setup-discord` with the new one, and restart steamidler.
+
+### Keep the token and the webhook secret
+
+- The **bot token** is the bot's password: with it, anyone can read and post wherever the bot can. It still cannot change your idling, because steamidler checks your Discord user ID itself. **Reset Token** in the Developer Portal makes the old one useless.
+- The **webhook URL** lets anyone post to its channel. Keep it in a private channel; deleting the webhook revokes it.
+- Never paste either into a chat, an issue or a screenshot.
+
+## Files it keeps
+
+Everything lives in `~/.steam-idler/`:
+
+```
+~/.steam-idler/
+├── credentials.json          # The saved Steam login token
+├── selection-<account>.json  # Your games, saved on every change
+├── discord.json              # Bot token, IDs and the optional webhook
+└── discord-status.json       # Which message is the status box (no secrets)
+```
+
+`credentials.json` and `discord.json` hold secrets in plain text and are readable only by their owner on Linux. Don't share or commit them. A `selection-<account>.json` that cannot be read is renamed to `selection-<account>.json.invalid`, and steamidler starts as if no games were saved.
 
 ## Development
 
 ```bash
 npx pnpm@10.34.6 install --frozen-lockfile --ignore-scripts
 npx pnpm@10.34.6 build    # Type-check and compile to dist/
+npx pnpm@10.34.6 test     # Build, then run the offline tests in test/
 npx pnpm@10.34.6 dev      # Build, then start interactive mode
 ```
 
-The project is TypeScript (ES modules, strict mode) with an offline test suite in `test/` (`npx pnpm@10.34.6 test`), which GitHub runs on every push to `main` and `dev`. How the code is laid out is in [docs/architecture.md](docs/architecture.md), how to build, test and release in [docs/development.md](docs/development.md), and project rules in [AGENTS.md](AGENTS.md). [docs/status.md](docs/status.md) and [docs/roadmap.md](docs/roadmap.md) say where the project stands and what may come next. Security: [SECURITY.md](SECURITY.md) for the overview and reporting, [SECURITY-AUDIT.md](SECURITY-AUDIT.md) for the full audit. Background notes on Steam behavior are in [docs/](docs/).
+TypeScript in strict mode, ES modules. GitHub runs the tests on every push to `main` and `dev`. Where to look next:
+
+- [docs/architecture.md](docs/architecture.md): how the code is laid out
+- [docs/development.md](docs/development.md): building, testing, releasing
+- [AGENTS.md](AGENTS.md): the project's rules
+- [docs/status.md](docs/status.md) and [docs/roadmap.md](docs/roadmap.md): where it stands and what may come next
+- [SECURITY.md](SECURITY.md) and [SECURITY-AUDIT.md](SECURITY-AUDIT.md): the security model, reporting, and the audit
 
 ## Disclaimer
 
-steamidler uses Steam's official client protocol, but idling may conflict with Valve's terms of service. Use it at your own risk.
+steamidler speaks Steam's own client protocol, but idling may break Valve's terms of service. Use it at your own risk.
 
 ## License
 

@@ -57,7 +57,7 @@ Agents hand the owner the relevant checklist and never run these themselves (`AG
 
 ## Core idling
 
-**Last passed:** not recorded. Derived from the README's [How idling works](../README.md#how-idling-works); unconfirmed until the owner keeps it.
+**Last passed:** not recorded. Derived from the README's [How it keeps your hours counting](../README.md#how-it-keeps-your-hours-counting); unconfirmed until the owner keeps it.
 
 1. Play one of the idled games on another device → the status table and the status box show it paused (🟡) with the clocks frozen; stop playing → the clocks run again.
 2. Cut the server's network for a few minutes → "⏸️ Idling paused" after about 30 s; once it is back, "▶️ Idling resumed" after about 90 s.

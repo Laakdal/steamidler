@@ -1,6 +1,6 @@
 # Runbook: steamidler on a Linux VPS
 
-How to run, update and fix steamidler once it is installed as a systemd service. Installation is in the README's [Running 24/7 on a Linux VPS](../README.md#running-247-on-a-linux-vps); what each exit code means is in its [Headless mode](../README.md#headless-mode) section, and each Discord message in [Messages](../README.md#messages).
+How to run, update and fix steamidler once it is installed as a systemd service. Installation is in the README's [Running 24/7 on a Linux server](../README.md#running-247-on-a-linux-server); what each exit code means is in its [Headless mode](../README.md#headless-mode) section, and each Discord message in [Messages](../README.md#messages).
 
 The commands below assume the README's setup: the service `steamidler`, the code in `/opt/steamidler`, and the service user `steamidler`. Adjust them if your unit file says otherwise. The unit file has not yet been tested on a live server; [live-tests.md](live-tests.md) has the checklist.
 

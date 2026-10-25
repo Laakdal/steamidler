@@ -1,6 +1,6 @@
 # Architecture: steamidler
 
-How the code is laid out and how the idling state model works. The rules every change must keep (exit codes, invariants, guards) are in [AGENTS.md](../AGENTS.md) §4 and §5; the files under `~/.steam-idler/` are listed in the README's [Configuration](../README.md#configuration) section.
+How the code is laid out and how the idling state model works. The rules every change must keep (exit codes, invariants, guards) are in [AGENTS.md](../AGENTS.md) §4 and §5; the files under `~/.steam-idler/` are listed in the README's [Files it keeps](../README.md#files-it-keeps) section.
 
 ## Source layout
 
