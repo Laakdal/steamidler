@@ -5,8 +5,8 @@ import type { IdlingGame } from '../types/index.js';
 // isFrozen is true while idling games accrue nothing (waiting to resume, or
 // blocked by another session), so the live delta must not be added.
 export function formatDailyReport(
-  idling: IdlingGame[],
-  paused: IdlingGame[],
+  idling: readonly IdlingGame[],
+  paused: readonly IdlingGame[],
   dayStartAccumulatedMs: Map<number, number>,
   date: Date,
   isFrozen = false,

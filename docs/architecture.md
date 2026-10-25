@@ -6,9 +6,12 @@ How the code is laid out and how the idling state model works. The rules every c
 
 ```
 src/
-  index.ts                  entry point and orchestrator: CLI flags, login, idling state machine, timers, shutdown,
+  index.ts                  entry point and orchestrator: CLI flags, login, idling state machine, shutdown,
                             and the controlPanel the Discord bot acts through
-  selection.ts              computeSelection: the selection diff shared by the E selector and Discord commands
+  runtime.ts                Runtime: the shared context (Steam client, notifier, session, timers, guard flags)
+  session.ts                Session: the idling and paused games, banking, applying a selection, block and unblock
+  timers.ts                 Timers: every timer by name, so shutdown clears them all in one call
+  selection.ts              installSelection: applies a selection for the E selector and Discord commands alike
   constants.ts              MAX_IDLE_GAMES (32), IS_HEADLESS
   steam/client.ts           SteamClient wrapper around steam-user (gamesPlayed, events, reconnect tracking)
   steam/auth.ts             QR / credentials / stored-token login (steam-session)
@@ -33,13 +36,13 @@ docs/                       project docs (this file, development, runbook, live-
 
 The Discord features each have a design that explains how their modules fit together: the bot and notifier in [docs/superpowers/specs/2026-10-19-discord-control-panel-design.md](superpowers/specs/2026-10-19-discord-control-panel-design.md), the live status box in [docs/superpowers/specs/2026-10-22-discord-status-panel-design.md](superpowers/specs/2026-10-22-discord-status-panel-design.md).
 
-## Idling state model (`src/index.ts`)
+## Idling state model (`src/session.ts`, driven from `src/index.ts`)
 
-Each selected game is an `IdlingGame` in exactly one of two arrays:
+Each selected game is an `IdlingGame` in exactly one of two lists of `rt.session`:
 
-- `idlingGames`: currently sent to Steam via `client.setGamesPlaying(...)`.
-- `pausedGames`: frozen because another device is playing that game (`playingBlocked`).
+- `idling`: currently sent to Steam via `client.setGamesPlaying(...)`.
+- `paused`: frozen because another device is playing that game (`session.blocked`).
 
-Playtime bookkeeping: `accumulatedMs` plus the live delta since `startTime`. `bankElapsed()` folds the delta in and is idempotent, so overlapping freeze paths cannot double-count.
+Playtime bookkeeping: `accumulatedMs` plus the live delta since `startTime`. `session.bank()` folds the delta in and is idempotent, so overlapping freeze paths cannot double-count. The guard flags (`isWaitingForResume`, `isInEditMode`, `isShuttingDown`, `idlingStartedAt`) live on the shared `Runtime`.
 
 The guards every selection change respects, and what to do after changing the arrays, are in [AGENTS.md](../AGENTS.md) §5.

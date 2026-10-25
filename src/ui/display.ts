@@ -68,8 +68,8 @@ function nameCell(game: IdlingGame, dim = false): string {
 
 // Displays a formatted table showing the status of all idling games
 export function showIdlingStatus(
-  idlingGames: IdlingGame[],
-  pausedGames: IdlingGame[] = [],
+  idlingGames: readonly IdlingGame[],
+  pausedGames: readonly IdlingGame[] = [],
   options: StatusOptions = {}
 ): void {
   const isWaiting = !!options.waitingReason;

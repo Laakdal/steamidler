@@ -29,20 +29,20 @@ import { loadCredentials, saveCredentials } from './storage/credentials.js';
 import { DiscordNotifier } from './discord/notifier.js';
 import { runDiscordSetup } from './discord/setup.js';
 import { CONFIG_PATH as DISCORD_CONFIG_PATH, saveDiscordDisabled } from './discord/config.js';
-import { isDiscordLibraryError, startBot, type BotHandle } from './discord/bot.js';
+import { isDiscordLibraryError, startBot } from './discord/bot.js';
 import { redactSecrets } from './discord/format.js';
 import { StatusPanel } from './discord/statusPanel.js';
 import type { PanelGame, StatusSnapshot } from './discord/statusEmbed.js';
 import { formatDailyReport } from './notifications/dailyReport.js';
 import { MAX_IDLE_GAMES, IS_HEADLESS } from './constants.js';
 import { createSpinner } from './ui/spinner.js';
-import { computeSelection } from './selection.js';
+import { installSelection } from './selection.js';
+import { createRuntime, isFrozen } from './runtime.js';
 import type { ControlPanel, SelectedGameView } from './discord/commands.js';
-import type { SteamGame, GameSelection, IdlingGame, LoginResult } from './types/index.js';
+import type { GameSelection, IdlingGame, LoginResult } from './types/index.js';
 
 const KNOWN_FLAGS = ['--headless', '--setup-discord', '--logout', '--help', '-h', '--version', '-v'];
 const args = process.argv.slice(2);
-const isHeadless = IS_HEADLESS;
 const isSetupDiscord = args.includes('--setup-discord');
 const isLogout = args.includes('--logout');
 const isHelp = args.includes('--help') || args.includes('-h');
@@ -99,48 +99,20 @@ const TAKEOVER_DRIFT_DELAY_MS = 120_000;
 // Cap on closing the Discord Gateway at exit, so a hung socket never delays it
 const BOT_DESTROY_TIMEOUT_MS = 1000;
 
+// The concrete client and notifier stay at hand for login and the bot, which
+// need the full types; everything else goes through rt.
 const client = new SteamClient();
 const discord = new DiscordNotifier();
-let botHandle: BotHandle | null = null;
-// The live status box in Discord; created in startIdling when a status channel is set
-let statusPanel: StatusPanel | null = null;
-let isIdling = false;
-let idlingGames: IdlingGame[] = [];
-let pausedGames: IdlingGame[] = [];
-let allGames: SteamGame[] = [];
-let gamesById = new Map<number, SteamGame>();
-let startTime: Date | null = null;
-let updateInterval: NodeJS.Timeout | null = null;
-let resumeTimer: NodeJS.Timeout | null = null;
-// Pending debounced "▶️ resumed" notification (see RESUME_NOTIFY_GRACE_MS).
-let resumeNotifyTimer: NodeJS.Timeout | null = null;
-// Pending debounced "⏸️ paused" notification (see PAUSE_NOTIFY_GRACE_MS).
-let pauseNotifyTimer: NodeJS.Timeout | null = null;
+// Shared context: game state (rt.session), guard flags and timers (rt.timers)
+const rt = createRuntime({ client, discord, isHeadless: IS_HEADLESS });
+// Lets code outside this file repaint or shut down without importing it
+rt.actions = { render: renderStatus, shutdown: handleShutdown };
 // True from the moment a pause was announced until the matching resume goes out.
 let pauseNotified = false;
 let pauseEpisodeStart = 0;
-let midnightTimer: NodeJS.Timeout | null = null;
-let flushTimer: NodeJS.Timeout | null = null;
-let zombieTimer: NodeJS.Timeout | null = null;
-let isInEditMode = false;
-let isWaitingForResume = false;
-let waitingReason = '';
-let isShuttingDown = false;
-// True once a terminal 🛑 "stopped" message has been sent (give-up paths). A
-// 🛑 "paused" message does not count: a later quit still deserves its own.
-let stopNotified = false;
-// True while another session on this account is playing. Steam blocks this
-// session's gamesPlayed entirely, so local time accounting freezes for every
-// idling game, not just the one being played.
-let playingBlocked = false;
-let accountName: string = '';
 let dayStartAccumulatedMs = new Map<number, number>();
 let transientFailureCount = 0;
 let rateLimitCount = 0;
-// Set immediately before a self-initiated relog (periodic flush or zombie
-// recovery). Suppresses the 🛑/▶️ Discord pair for the relog cycle; cleared in
-// restoreIdling once the session is back.
-let selfInitiatedRelog = false;
 // Last successful single-app playtime probe (zombie watchdog). Doubles as the
 // "last known good" baseline for post-takeover drift reporting.
 let zombieBaseline: { appid: number; playtime: number; at: number } | null = null;
@@ -152,22 +124,6 @@ let zombieStrike = 0;
 // Apps the owned-apps probe returns nothing for (family-shared / unvetted);
 // skipped as probe candidates so the watchdog is not silently disabled.
 const unprobeableAppIds = new Set<number>();
-
-// Folds the live delta into accumulatedMs and restarts the clock. Idempotent,
-// so overlapping freeze paths (edit mode, waiting state, playing-blocked) can
-// never double-count the same interval.
-function bankElapsed(games: IdlingGame[], now = new Date()): void {
-  for (const game of games) {
-    game.accumulatedMs += now.getTime() - game.startTime.getTime();
-    game.startTime = now;
-  }
-}
-
-// True while idling games accrue no server-side playtime, so the display and
-// daily report must not add the live delta.
-function isFrozen(): boolean {
-  return isWaitingForResume || playingBlocked;
-}
 
 // "3m" / "2h 05m" for Discord copy
 function formatDuration(ms: number): string {
@@ -181,36 +137,33 @@ function formatDuration(ms: number): string {
 // within the grace window stays silent, and never repeated while an announced
 // episode is still flapping (kicked again inside the resume grace).
 function schedulePauseNotification(reason: string): void {
-  if (pauseNotified || pauseNotifyTimer) return;
+  if (pauseNotified || rt.timers.has('pauseNotify')) return;
   pauseEpisodeStart = Date.now();
-  pauseNotifyTimer = setTimeout(() => {
-    pauseNotifyTimer = null;
+  rt.timers.timeout('pauseNotify', () => {
     pauseNotified = true;
-    discord.send(`⏸️ Idling paused — ${reason}. Auto-retrying.`);
+    rt.discord.send(`⏸️ Idling paused — ${reason}. Auto-retrying.`);
   }, PAUSE_NOTIFY_GRACE_MS);
 }
 
 // Closes an announced episode once the reconnect has held for the grace window
 function scheduleResumeNotification(): void {
   if (!pauseNotified) return;
-  if (resumeNotifyTimer) clearTimeout(resumeNotifyTimer);
-  resumeNotifyTimer = setTimeout(() => {
-    resumeNotifyTimer = null;
+  rt.timers.timeout('resumeNotify', () => {
     pauseNotified = false;
     const downtime = formatDuration(Date.now() - pauseEpisodeStart);
-    discord.send(`▶️ Idling resumed after ${downtime} — ${idlingGames.length} games`);
+    rt.discord.send(`▶️ Idling resumed after ${downtime} — ${rt.session.idling.length} games`);
   }, RESUME_NOTIFY_GRACE_MS);
 }
 
 // Renders the status table from current state. Every state change repaints
 // through here, so it also asks the Discord status box for a prompt update.
 function renderStatus(): void {
-  showIdlingStatus(idlingGames, pausedGames, {
-    waitingReason: isWaitingForResume ? waitingReason : null,
-    playingBlocked,
-    showKeyHints: !isHeadless,
+  showIdlingStatus(rt.session.idling, rt.session.paused, {
+    waitingReason: rt.isWaitingForResume ? rt.waitingReason : null,
+    playingBlocked: rt.session.blocked,
+    showKeyHints: !rt.isHeadless,
   });
-  statusPanel?.nudge();
+  rt.statusPanel?.nudge();
 }
 
 // What the Discord status box shows, computed like the terminal table: no
@@ -218,7 +171,7 @@ function renderStatus(): void {
 // blocked, since a disconnected session cannot be blocked meaningfully.
 function statusSnapshot(): StatusSnapshot {
   const now = Date.now();
-  const frozen = isFrozen();
+  const frozen = isFrozen(rt);
   const view = (g: IdlingGame, state: PanelGame['state']): PanelGame => {
     const gainedMs = g.accumulatedMs + (state === 'idling' && !frozen ? now - g.startTime.getTime() : 0);
     return {
@@ -229,11 +182,11 @@ function statusSnapshot(): StatusSnapshot {
     };
   };
   return {
-    state: isShuttingDown ? 'stopped' : isWaitingForResume ? 'waiting' : playingBlocked ? 'blocked' : 'idling',
-    waitingReason: isWaitingForResume ? waitingReason : null,
+    state: rt.isShuttingDown ? 'stopped' : rt.isWaitingForResume ? 'waiting' : rt.session.blocked ? 'blocked' : 'idling',
+    waitingReason: rt.isWaitingForResume ? rt.waitingReason : null,
     games: [
-      ...idlingGames.map((g) => view(g, 'idling')),
-      ...pausedGames.map((g) => view(g, 'paused')),
+      ...rt.session.idling.map((g) => view(g, 'idling')),
+      ...rt.session.paused.map((g) => view(g, 'paused')),
     ],
   };
 }
@@ -241,19 +194,15 @@ function statusSnapshot(): StatusSnapshot {
 // (Re)starts the 60s tick that refreshes the table. On a non-TTY
 // (systemd/journald) nothing is printed, instead of ~35 lines every minute.
 function startDisplayLoop(): void {
-  if (updateInterval) clearInterval(updateInterval);
-  updateInterval = setInterval(() => {
-    if (!startTime || isInEditMode) return;
+  rt.timers.interval('display', () => {
+    if (!rt.idlingStartedAt || rt.isInEditMode) return;
     if (process.stdout.isTTY) renderStatus();
   }, 60000);
 }
 
 // Stops the 60s tick
 function stopDisplayLoop(): void {
-  if (updateInterval) {
-    clearInterval(updateInterval);
-    updateInterval = null;
-  }
+  rt.timers.clear('display');
 }
 
 // Exponential backoff with full jitter; attempt is 1-based.
@@ -273,42 +222,38 @@ function isTakeoverError(err: Error & { eresult?: number }): boolean {
 function enterWaitingState(reason: string, isTakeover = false): void {
   // Our own logOff during shutdown/crash emits 'disconnected' asynchronously;
   // that must not re-arm resume or announce a pause after "stopped".
-  if (isWaitingForResume || isShuttingDown) return;
-  isWaitingForResume = true;
-  waitingReason = reason;
+  if (rt.isWaitingForResume || rt.isShuttingDown) return;
+  rt.isWaitingForResume = true;
+  rt.waitingReason = reason;
   // If a resume notification is still inside its grace window, the session is
   // flapping: we reconnected and Steam kicked us again because the player is
   // still active. This pause episode was already announced, so cancel the
   // pending resume and stay silent instead of emitting another paused/resumed
   // pair on every retry.
-  if (resumeNotifyTimer) {
-    clearTimeout(resumeNotifyTimer);
-    resumeNotifyTimer = null;
-  }
+  rt.timers.clear('resumeNotify');
   // While blocked the clocks are already frozen (startTime stale by design);
   // banking again would credit the blocked interval.
-  if (!playingBlocked) bankElapsed(idlingGames);
+  if (!rt.session.blocked) rt.session.bank();
   stopDisplayLoop();
   // In edit mode the selector owns the screen; enterEditMode re-renders the
   // waiting state once the user leaves the selector.
-  if (!isInEditMode) renderStatus();
+  if (!rt.isInEditMode) renderStatus();
   // A self-initiated relog (flush/zombie recovery) suppresses the pause message;
   // restoreIdling emits a single quiet "🔄 flush" line instead.
-  if (!selfInitiatedRelog) schedulePauseNotification(reason);
-  resumeTimer = setTimeout(attemptResume, isTakeover ? TAKEOVER_RETRY_MS : RESUME_RETRY_MS);
+  if (!rt.selfInitiatedRelog) schedulePauseNotification(reason);
+  rt.timers.timeout('resume', attemptResume, isTakeover ? TAKEOVER_RETRY_MS : RESUME_RETRY_MS);
 }
 
 // Tries to log back in with the saved refresh token; bounded retries for both auth and generic errors
 async function attemptResume(): Promise<void> {
-  resumeTimer = null;
-  if (isShuttingDown) return;
+  if (rt.isShuttingDown) return;
 
   // steam-user has autoRelogin: true and may have silently reconnected on its
   // own between the disconnect event and this timer firing. Calling logOn
   // again in that state throws "Already logged on" from inside a nextTick
   // async function — an unhandled rejection that crashes the process. Detect
   // it here and just restore.
-  if (client.isConnected) {
+  if (rt.client.isConnected) {
     transientFailureCount = 0;
     rateLimitCount = 0;
     restoreIdling();
@@ -320,8 +265,8 @@ async function attemptResume(): Promise<void> {
   // logOn while it is connecting throws "Already attempting to log on" the same
   // uncatchable way. Usually its loop ends in loggedOn (→ restoreIdling) or
   // error (→ our next tick logs on), so keep polling for a bounded time.
-  if (client.isReconnecting) {
-    resumeTimer = setTimeout(attemptResume, RESUME_RETRY_MS);
+  if (rt.client.isReconnecting) {
+    rt.timers.timeout('resume', attemptResume, RESUME_RETRY_MS);
     return;
   }
   // Past that bound and still mid-connect: steam-user's loop is stuck (CM
@@ -329,25 +274,25 @@ async function attemptResume(): Promise<void> {
   // connection, then log on next tick: an in-flight CM-list fetch of the
   // aborted attempt only notices the teardown once it resumes, and a logOn in
   // the same tick would let it open a second connection.
-  if (client.isConnecting) {
-    client.abortPendingConnect();
-    resumeTimer = setTimeout(attemptResume, ABORT_SETTLE_MS);
+  if (rt.client.isConnecting) {
+    rt.client.abortPendingConnect();
+    rt.timers.timeout('resume', attemptResume, ABORT_SETTLE_MS);
     return;
   }
 
   const credentials = loadCredentials();
   if (!credentials) {
     showError('No stored credentials — cannot auto-resume');
-    discord.send('🛑 Idling stopped — no stored credentials, cannot auto-resume.');
-    stopNotified = true;
+    rt.discord.send('🛑 Idling stopped — no stored credentials, cannot auto-resume.');
+    rt.stopNotified = true;
     handleShutdown(0);
     return;
   }
   try {
     // Prefer the token the session last ran on: a renewal that failed to
     // persist leaves a dead token on disk.
-    const refreshToken = client.currentRefreshToken ?? credentials.refreshToken;
-    await client.loginWithRefreshToken(refreshToken, credentials.accountName);
+    const refreshToken = rt.client.currentRefreshToken ?? credentials.refreshToken;
+    await rt.client.loginWithRefreshToken(refreshToken, credentials.accountName);
     transientFailureCount = 0;
     rateLimitCount = 0;
     restoreIdling();
@@ -359,8 +304,8 @@ async function attemptResume(): Promise<void> {
 
     // A flush relog that does not come back is a real outage, not a quiet
     // flush any more: stop suppressing and announce it like any other pause.
-    if (selfInitiatedRelog) {
-      selfInitiatedRelog = false;
+    if (rt.selfInitiatedRelog) {
+      rt.selfInitiatedRelog = false;
       schedulePauseNotification(`flush relog failed to reconnect (${label})`);
     }
 
@@ -369,8 +314,8 @@ async function attemptResume(): Promise<void> {
     // Exit 0 so a systemd unit does not restart-loop a permanent failure.
     if (code !== undefined && TERMINAL_ERESULTS.has(code)) {
       showError(`Resume aborted — ${label} is not auto-recoverable. Manual re-login required.`);
-      discord.send(`🛑 Idling stopped — ${label}. Manual re-login required.`);
-      stopNotified = true;
+      rt.discord.send(`🛑 Idling stopped — ${label}. Manual re-login required.`);
+      rt.stopNotified = true;
       if (INVALID_TOKEN_ERESULTS.has(code)) clearCredentials();
       handleShutdown(0);
       return;
@@ -382,12 +327,13 @@ async function attemptResume(): Promise<void> {
       rateLimitCount += 1;
       if (rateLimitCount >= RATE_LIMIT_RETRY_LIMIT) {
         showError(`Resume failed after ${RATE_LIMIT_RETRY_LIMIT} rate-limited attempts: ${label}`);
-        discord.send(`🛑 Idling stopped — rate-limited ${RATE_LIMIT_RETRY_LIMIT}× (${label}).`);
-        stopNotified = true;
+        rt.discord.send(`🛑 Idling stopped — rate-limited ${RATE_LIMIT_RETRY_LIMIT}× (${label}).`);
+        rt.stopNotified = true;
         handleShutdown(1);
         return;
       }
-      resumeTimer = setTimeout(
+      rt.timers.timeout(
+        'resume',
         attemptResume,
         Math.max(RATE_LIMIT_MIN_WAIT_MS, backoffMs(rateLimitCount, RATE_LIMIT_BACKOFF_CAP_MS))
       );
@@ -398,14 +344,14 @@ async function attemptResume(): Promise<void> {
     transientFailureCount += 1;
     if (transientFailureCount >= GENERAL_FAILURE_RETRY_LIMIT) {
       showError(`Resume failed after ${GENERAL_FAILURE_RETRY_LIMIT} attempts: ${label}`);
-      discord.send(
+      rt.discord.send(
         `🛑 Idling stopped — failed to reconnect after ${GENERAL_FAILURE_RETRY_LIMIT}× (last error: ${label}).`
       );
-      stopNotified = true;
+      rt.stopNotified = true;
       handleShutdown(1);
       return;
     }
-    resumeTimer = setTimeout(attemptResume, backoffMs(transientFailureCount, BACKOFF_CAP_MS));
+    rt.timers.timeout('resume', attemptResume, backoffMs(transientFailureCount, BACKOFF_CAP_MS));
   }
 }
 
@@ -414,40 +360,35 @@ async function attemptResume(): Promise<void> {
 // can race to call this; the guard prevents a duplicate resume (which would
 // orphan the previous interval and send a second "resumed" notification).
 function restoreIdling(): void {
-  if (!isWaitingForResume) return;
+  if (!rt.isWaitingForResume) return;
   // steam-user's auto-reconnect can land after we already said goodbye (e.g. a
   // flush relog was in flight when the user quit). Leave the session off.
-  if (isShuttingDown) {
-    client.logout();
+  if (rt.isShuttingDown) {
+    rt.client.logout();
     return;
   }
-  isWaitingForResume = false;
-  waitingReason = '';
+  rt.isWaitingForResume = false;
+  rt.waitingReason = '';
   transientFailureCount = 0;
   rateLimitCount = 0;
   // A fresh session starts unblocked; Steam re-reports a block via playingState
   // right after logon, which handlePlayingState turns into a transition. Games
   // paused by a block before the disconnect must rejoin now: Steam sends no
   // "unblocked" event on logon, and its echo after gamesPlayed is not one either.
-  playingBlocked = false;
-  const now = new Date();
-  releasePausedGames();
-  for (const game of idlingGames) game.startTime = now;
-  client.setGamesPlaying(idlingGames.map((g) => g.appid));
-  if (!isInEditMode) {
+  // release() also restarts every idling clock.
+  rt.session.release();
+  rt.client.setGamesPlaying(rt.session.idling.map((g) => g.appid));
+  if (!rt.isInEditMode) {
     renderStatus();
     startDisplayLoop();
   }
 
   // A blip that reconnected inside the pause grace was never announced, so
   // there is nothing to resume from either.
-  if (pauseNotifyTimer) {
-    clearTimeout(pauseNotifyTimer);
-    pauseNotifyTimer = null;
-  }
-  if (selfInitiatedRelog) {
-    selfInitiatedRelog = false;
-    discord.send('🔄 flush — playtime committed, session refreshed');
+  rt.timers.clear('pauseNotify');
+  if (rt.selfInitiatedRelog) {
+    rt.selfInitiatedRelog = false;
+    rt.discord.send('🔄 flush — playtime committed, session refreshed');
   }
   // Debounce: only announce a resume that actually holds. If the player is
   // still active, this reconnect is kicked again within seconds and
@@ -466,14 +407,14 @@ function restoreIdling(): void {
 // last known-good value, to quantify how much of the pre-takeover tail survived.
 // Observability only; reuses the zombie watchdog's baseline.
 function reportTakeoverDrift(lastGood: { appid: number; playtime: number }): void {
-  setTimeout(async () => {
+  rt.timers.timeout('takeoverDrift', async () => {
     try {
-      const now = await client.getPlaytimeForever(lastGood.appid);
+      const now = await rt.client.getPlaytimeForever(lastGood.appid);
       if (now === null) return;
       const delta = now - lastGood.playtime;
-      const name = gamesById.get(lastGood.appid)?.name ?? `App ${lastGood.appid}`;
+      const name = rt.library.byId.get(lastGood.appid)?.name ?? `App ${lastGood.appid}`;
       const sign = delta >= 0 ? '+' : '';
-      discord.send(
+      rt.discord.send(
         `📊 Post-takeover commit check (${name}): last-known ${lastGood.playtime}m → now ${now}m (Δ${sign}${delta}m).`
       );
     } catch {
@@ -490,18 +431,18 @@ function msUntilNextMidnight(): number {
 }
 
 function scheduleDailyReport(): void {
-  midnightTimer = setTimeout(() => {
+  rt.timers.timeout('midnight', () => {
     // Fires just after midnight but reports on the day that ended
     const endedDay = new Date();
     endedDay.setDate(endedDay.getDate() - 1);
     const report = formatDailyReport(
-      idlingGames,
-      pausedGames,
+      rt.session.idling,
+      rt.session.paused,
       dayStartAccumulatedMs,
       endedDay,
-      isFrozen()
+      isFrozen(rt)
     );
-    discord.send(report);
+    rt.discord.send(report);
     snapshotDayStart();
     scheduleDailyReport();
   }, msUntilNextMidnight());
@@ -513,14 +454,14 @@ function scheduleDailyReport(): void {
 function snapshotDayStart(): void {
   dayStartAccumulatedMs.clear();
   const now = Date.now();
-  const frozen = isFrozen();
-  for (const game of idlingGames) {
+  const frozen = isFrozen(rt);
+  for (const game of rt.session.idling) {
     const live = frozen
       ? game.accumulatedMs
       : game.accumulatedMs + (now - game.startTime.getTime());
     dayStartAccumulatedMs.set(game.appid, live);
   }
-  for (const game of pausedGames) {
+  for (const game of rt.session.paused) {
     dayStartAccumulatedMs.set(game.appid, game.accumulatedMs);
   }
 }
@@ -532,12 +473,12 @@ function snapshotDayStart(): void {
 // stays set until Steam acknowledges the logOff, so isConnected alone is not
 // enough to detect a relog already in flight.
 function forceFlushRelog(): void {
-  if (!client.isConnected || selfInitiatedRelog) return;
-  selfInitiatedRelog = true;
+  if (!rt.client.isConnected || rt.selfInitiatedRelog) return;
+  rt.selfInitiatedRelog = true;
   try {
-    client.relog();
+    rt.client.relog();
   } catch {
-    selfInitiatedRelog = false;
+    rt.selfInitiatedRelog = false;
   }
 }
 
@@ -545,9 +486,9 @@ function forceFlushRelog(): void {
 // the in-flight idle session into playtime_forever. Caps worst-case loss at
 // FLUSH_INTERVAL_MS. Self-reschedules.
 function scheduleFlush(): void {
-  flushTimer = setTimeout(() => {
-    const idle = !isWaitingForResume && !isInEditMode && !isShuttingDown && !playingBlocked;
-    if (idle && idlingGames.length > 0) {
+  rt.timers.timeout('flush', () => {
+    const idle = !rt.isWaitingForResume && !rt.isInEditMode && !rt.isShuttingDown && !rt.session.blocked;
+    if (idle && rt.session.idling.length > 0) {
       forceFlushRelog();
     }
     scheduleFlush();
@@ -559,20 +500,20 @@ function scheduleFlush(): void {
 // (which forces a re-baseline rather than a false zombie verdict).
 function pickProbeApp(): IdlingGame | null {
   if (zombieBaseline) {
-    const still = idlingGames.find((g) => g.appid === zombieBaseline!.appid);
+    const still = rt.session.idling.find((g) => g.appid === zombieBaseline!.appid);
     if (still) return still;
   }
-  return idlingGames.find((g) => !unprobeableAppIds.has(g.appid)) ?? null;
+  return rt.session.idling.find((g) => !unprobeableAppIds.has(g.appid)) ?? null;
 }
 
 // Mitigation B: confirm the server's playtime is actually climbing for a
 // continuously-idled app. If a full window passes with no increase, commits are
 // silently dying (zombie session) → alert + force a relog. Self-reschedules.
 async function runZombieCheck(): Promise<void> {
-  if (isFrozen() || isInEditMode || isShuttingDown || selfInitiatedRelog || !client.isConnected) {
+  if (isFrozen(rt) || rt.isInEditMode || rt.isShuttingDown || rt.selfInitiatedRelog || !rt.client.isConnected) {
     return;
   }
-  if (idlingGames.length === 0) {
+  if (rt.session.idling.length === 0) {
     zombieBaseline = null;
     return;
   }
@@ -585,13 +526,13 @@ async function runZombieCheck(): Promise<void> {
 
   let playtime: number | null;
   try {
-    playtime = await client.getPlaytimeForever(probe.appid);
+    playtime = await rt.client.getPlaytimeForever(probe.appid);
   } catch {
     return; // transient fetch error — keep the baseline, try again next tick
   }
   // State may have moved while the probe was in flight (disconnect, edit mode,
   // shutdown); a relog must not fire into any of those.
-  if (isFrozen() || isInEditMode || isShuttingDown || selfInitiatedRelog || !client.isConnected) {
+  if (isFrozen(rt) || rt.isInEditMode || rt.isShuttingDown || rt.selfInitiatedRelog || !rt.client.isConnected) {
     return;
   }
   if (playtime === null) {
@@ -631,14 +572,14 @@ async function runZombieCheck(): Promise<void> {
 
   // Second strike: a forced relog already failed to produce a commit → real
   // zombie. Alert and force another reconnect, then reset.
-  discord.send('⚠️ Zombie session — playtime not committing after a relog. Forcing reconnect.');
+  rt.discord.send('⚠️ Zombie session — playtime not committing after a relog. Forcing reconnect.');
   zombieStrike = 0;
   zombieBaseline = null;
   forceFlushRelog();
 }
 
 function scheduleZombieCheck(): void {
-  zombieTimer = setTimeout(async () => {
+  rt.timers.timeout('zombie', async () => {
     await runZombieCheck();
     scheduleZombieCheck();
   }, ZOMBIE_CHECK_INTERVAL_MS);
@@ -646,7 +587,7 @@ function scheduleZombieCheck(): void {
 
 // Tells the user once per run when Discord is webhook-only, so a missing bot is never a surprise
 function announceWebhookOnly(): void {
-  if (discord.isConfigured() && !discord.botConfig()) {
+  if (rt.discord.isConfigured() && !rt.discord.botConfig()) {
     console.log(
       'Discord: notifications only (webhook). Run --setup-discord to add the bot for /add, /remove and /status.'
     );
@@ -717,18 +658,18 @@ async function main(): Promise<void> {
   // Steam renews a refresh token that is close to expiry at logon; the old one
   // is invalid from then on, so persist the new one or the next start fails.
   // The live session keeps running on the in-memory token either way.
-  client.onRefreshToken((refreshToken) => {
+  rt.client.onRefreshToken((refreshToken) => {
     const stored = loadCredentials();
-    const name = stored?.accountName ?? accountName;
+    const name = stored?.accountName ?? rt.accountName;
     if (!name) return;
     if (!saveCredentials({ ...stored, accountName: name, refreshToken })) {
-      discord.send(
+      rt.discord.send(
         '⚠️ Steam renewed the login token but it could not be saved — the next restart will need an interactive login.'
       );
     }
   });
 
-  if (isHeadless) {
+  if (rt.isHeadless) {
     await runHeadless();
   } else {
     await runInteractive();
@@ -747,9 +688,9 @@ const HEADLESS_EXIT_CONFIG = 2;
 // (otherwise a systemd unit dies silently), then exits after the flush grace.
 async function failHeadless(message: string, exitCode: number): Promise<never> {
   showError(message);
-  const sent = discord.send(`🛑 Headless start failed — ${message}`);
+  const sent = rt.discord.send(`🛑 Headless start failed — ${message}`);
   try {
-    if (client.isConnected) client.logout();
+    if (rt.client.isConnected) rt.client.logout();
   } catch {
     // best effort
   }
@@ -773,7 +714,7 @@ async function runHeadless(): Promise<void> {
     if (rateLimitedAttempts >= RATE_LIMIT_RETRY_LIMIT) break;
     const waitMs = Math.max(RATE_LIMIT_MIN_WAIT_MS, backoffMs(rateLimitedAttempts, RATE_LIMIT_BACKOFF_CAP_MS));
     console.log(chalk.yellow(`Rate limited by Steam — retrying login in ${formatDuration(waitMs)}.`));
-    if (rateLimitedAttempts === 1) discord.send('⏸️ Headless start rate-limited by Steam — waiting before retrying.');
+    if (rateLimitedAttempts === 1) rt.discord.send('⏸️ Headless start rate-limited by Steam — waiting before retrying.');
     await new Promise((resolve) => setTimeout(resolve, waitMs));
     loginResult = await loginWithStoredCredentials(client);
   }
@@ -786,20 +727,20 @@ async function runHeadless(): Promise<void> {
       terminal ? HEADLESS_EXIT_CONFIG : HEADLESS_EXIT_TRANSIENT
     );
   }
-  accountName = loginResult.accountName!;
+  rt.accountName = loginResult.accountName!;
   announceWebhookOnly();
 
   const gamesSpinner = createSpinner('Fetching your game library...').start();
   try {
-    allGames = await client.getOwnedGames();
-    gamesById = new Map(allGames.map((g) => [g.appid, g]));
-    gamesSpinner.succeed(`Found ${allGames.length} games`);
+    rt.library.games = await rt.client.getOwnedGames();
+    rt.library.byId = new Map(rt.library.games.map((g) => [g.appid, g]));
+    gamesSpinner.succeed(`Found ${rt.library.games.length} games`);
   } catch (err) {
     gamesSpinner.fail('Failed to fetch games');
     await failHeadless((err as Error).message, HEADLESS_EXIT_TRANSIENT);
   }
 
-  const favoriteIds = loadFavorites(accountName);
+  const favoriteIds = loadFavorites(rt.accountName);
   if (favoriteIds.length === 0) {
     await failHeadless(
       'No favorites configured. Run interactively first to set favorites.',
@@ -807,14 +748,14 @@ async function runHeadless(): Promise<void> {
     );
   }
 
-  const matchingGames: GameSelection[] = allGames
+  const matchingGames: GameSelection[] = rt.library.games
     .filter((g) => favoriteIds.includes(g.appid))
     .map((g) => ({ appid: g.appid, name: g.name }));
 
   if (matchingGames.length === 0) {
     // Family-shared favorites are only visible once license data arrived; a
     // slow PICS at boot must not look like a permanent config error.
-    if (!client.ownershipCacheComplete) {
+    if (!rt.client.ownershipCacheComplete) {
       await failHeadless(
         'No matching games found — library incomplete (license data timed out). Retrying.',
         HEADLESS_EXIT_TRANSIENT
@@ -850,10 +791,10 @@ async function runInteractive(): Promise<void> {
     loginResult = await handleLogin();
   }
 
-  accountName = loginResult.accountName!;
-  showLoginSuccess(accountName);
+  rt.accountName = loginResult.accountName!;
+  showLoginSuccess(rt.accountName);
 
-  if (!discord.hasFile()) {
+  if (!rt.discord.hasFile()) {
     const wantsDiscord = await confirm({
       message: 'Configure Discord notifications now? You can do this later with --setup-discord.',
       default: true,
@@ -870,29 +811,29 @@ async function runInteractive(): Promise<void> {
       // away a token or webhook the user may only need to fix by hand.
       saveDiscordDisabled();
     }
-    discord.reload();
+    rt.discord.reload();
   }
   announceWebhookOnly();
 
   const spinner = createSpinner('Fetching your game library...').start();
   try {
-    allGames = await client.getOwnedGames();
-    gamesById = new Map(allGames.map((g) => [g.appid, g]));
-    spinner.succeed(`Found ${allGames.length} games in your library`);
+    rt.library.games = await rt.client.getOwnedGames();
+    rt.library.byId = new Map(rt.library.games.map((g) => [g.appid, g]));
+    spinner.succeed(`Found ${rt.library.games.length} games in your library`);
   } catch (err) {
     spinner.fail('Failed to fetch games');
     showError((err as Error).message);
     process.exit(1);
   }
 
-  if (allGames.length === 0) {
+  if (rt.library.games.length === 0) {
     showError('No games found in your library');
     process.exit(1);
   }
 
   const { selectedGames, aborted } = await selectGames(
-    allGames,
-    accountName
+    rt.library.games,
+    rt.accountName
   );
 
   if (aborted) {
@@ -930,7 +871,7 @@ async function handleLogin(): Promise<LoginResult> {
 // never touches stdin: `steamidler --headless &` from a shell would otherwise
 // be stopped by SIGTTOU when setRawMode runs in the background.
 function setupKeyboardInput(): void {
-  if (isHeadless) return;
+  if (rt.isHeadless) return;
   if (process.stdin.isTTY) {
     readline.emitKeypressEvents(process.stdin);
     process.stdin.setRawMode(true);
@@ -938,13 +879,13 @@ function setupKeyboardInput(): void {
 
     process.stdin.on('keypress', async (str, key) => {
       // Raw mode stays on during the exit grace; nothing may repaint over the goodbye
-      if (isShuttingDown) return;
+      if (rt.isShuttingDown) return;
       if (key && key.ctrl && key.name === 'c') {
         handleShutdown();
         return;
       }
 
-      if (isInEditMode) {
+      if (rt.isInEditMode) {
         return;
       }
 
@@ -961,48 +902,28 @@ function setupKeyboardInput(): void {
   }
 }
 
-// Creates an IdlingGame object from a GameSelection
-function createIdlingGame(game: GameSelection, steamGame?: SteamGame): IdlingGame {
-  const initialPlaytime = steamGame?.playtime_forever ?? 0;
-  return {
-    appid: game.appid,
-    name: game.name,
-    initialPlaytime,
-    startTime: new Date(),
-    accumulatedMs: 0,
-  };
-}
-
-// Converts IdlingGame array back to GameSelection array for the selector
-function getGameCurrentSelection(): GameSelection[] {
-  return [...idlingGames, ...pausedGames].map((g) => ({
-    appid: g.appid,
-    name: g.name,
-  }));
-}
-
 // Handles edit mode for changing game selection while idling
 async function enterEditMode(): Promise<void> {
-  if (isWaitingForResume) {
+  if (rt.isWaitingForResume) {
     showError('Edit disabled while waiting for resume');
     return;
   }
-  isInEditMode = true;
+  rt.isInEditMode = true;
 
   stopDisplayLoop();
   // Steam keeps crediting while the selector is open (gamesPlayed stays set), so
   // the clock keeps running from here; only a block has it frozen already.
-  if (!playingBlocked) bankElapsed(idlingGames);
+  if (!rt.session.blocked) rt.session.bank();
 
   console.clear();
 
-  const currentSelection = getGameCurrentSelection();
-  const { selectedGames: newSelection, aborted } = await selectGames(allGames, accountName, currentSelection);
+  const currentSelection = rt.session.selection();
+  const { selectedGames: newSelection, aborted } = await selectGames(rt.library.games, rt.accountName, currentSelection);
 
   // Ctrl+C inside the selector: the idling-screen key handler already started
   // the graceful shutdown; do not repaint over the goodbye message.
-  if (aborted || isShuttingDown) {
-    isInEditMode = false;
+  if (aborted || rt.isShuttingDown) {
+    rt.isInEditMode = false;
     handleShutdown(0);
     return;
   }
@@ -1010,14 +931,14 @@ async function enterEditMode(): Promise<void> {
   if (newSelection.length === 0) {
     showError('No games selected - keeping current selection');
   } else {
-    installSelection(newSelection);
+    installSelection(rt, forgetDayStart, newSelection);
   }
 
   // Always re-send on the way out, selection changed or not: an unblock that
   // arrived while the selector was open deferred its re-send to here, and Steam
   // does not restore a blocked session's list on its own.
-  if (!isWaitingForResume) {
-    client.setGamesPlaying(idlingGames.map((g) => g.appid));
+  if (!rt.isWaitingForResume) {
+    rt.client.setGamesPlaying(rt.session.idling.map((g) => g.appid));
   }
 
   if (process.stdin.isTTY) {
@@ -1026,60 +947,47 @@ async function enterEditMode(): Promise<void> {
     process.stdin.resume();
   }
 
-  isInEditMode = false;
+  rt.isInEditMode = false;
 
-  if (!startTime) return;
+  if (!rt.idlingStartedAt) return;
   renderStatus();
   // A disconnect that landed while the selector was open leaves us waiting:
   // keep the clocks frozen and let restoreIdling restart the loop.
-  if (!isWaitingForResume) startDisplayLoop();
+  if (!rt.isWaitingForResume) startDisplayLoop();
 }
 
-// Runs the shared selection diff and installs the result, for edit mode and the
-// Discord commands alike. A game the diff creates (new, or removed and re-added
-// the same day) drops its old day-start snapshot, so the daily report counts it
-// from zero instead of clamping a negative gain to 0m.
-function installSelection(newSelection: GameSelection[]): void {
-  const previous = new Set([...idlingGames, ...pausedGames]);
-  const next = computeSelection(
-    { idling: idlingGames, paused: pausedGames },
-    newSelection,
-    (sel) => createIdlingGame(sel, gamesById.get(sel.appid))
-  );
-  idlingGames = next.idling;
-  pausedGames = next.paused;
-  for (const game of [...idlingGames, ...pausedGames]) {
-    if (!previous.has(game)) dayStartAccumulatedMs.delete(game.appid);
-  }
+// Drops the day-start snapshot of games installSelection created
+function forgetDayStart(appids: number[]): void {
+  for (const appid of appids) dayStartAccumulatedMs.delete(appid);
 }
 
 // Applies a changed selection from the Discord commands exactly as edit mode does.
 function applyRemoteSelection(newSelection: GameSelection[]): void {
-  if (!playingBlocked) bankElapsed(idlingGames);
-  installSelection(newSelection);
-  if (!isWaitingForResume) client.setGamesPlaying(idlingGames.map((g) => g.appid));
-  if (!isInEditMode) renderStatus();
+  if (!rt.session.blocked) rt.session.bank();
+  installSelection(rt, forgetDayStart, newSelection);
+  if (!rt.isWaitingForResume) rt.client.setGamesPlaying(rt.session.idling.map((g) => g.appid));
+  if (!rt.isInEditMode) renderStatus();
 }
 
 // What the Discord bot may see and do; startIdling hands it to the bot client.
 const controlPanel: ControlPanel = {
   // Reports why a remote change is unsafe right now, or null when it is fine.
   busyReason(): string | null {
-    if (isShuttingDown) return 'steamidler is shutting down.';
-    if (!startTime) return "Idling hasn't started yet.";
-    if (isInEditMode) return 'The game selector is open on the PC — try again after closing it.';
-    if (isWaitingForResume) {
-      return `Disconnected from Steam (${waitingReason}) — try again after it reconnects.`;
+    if (rt.isShuttingDown) return 'steamidler is shutting down.';
+    if (!rt.idlingStartedAt) return "Idling hasn't started yet.";
+    if (rt.isInEditMode) return 'The game selector is open on the PC — try again after closing it.';
+    if (rt.isWaitingForResume) {
+      return `Disconnected from Steam (${rt.waitingReason}) — try again after it reconnects.`;
     }
     return null;
   },
   // Exposes the disconnect reason, or null while connected.
   waitingReason(): string | null {
-    return isWaitingForResume ? waitingReason : null;
+    return rt.isWaitingForResume ? rt.waitingReason : null;
   },
   // Lists the owned games the commands may offer.
   library(): { appid: number; name: string }[] {
-    return allGames.map((g) => ({ appid: g.appid, name: g.name }));
+    return rt.library.games.map((g) => ({ appid: g.appid, name: g.name }));
   },
   // Maps the two internal arrays to the read-only view the bot renders.
   selection(): SelectedGameView[] {
@@ -1089,31 +997,25 @@ const controlPanel: ControlPanel = {
       state,
     });
     return [
-      ...idlingGames.map((g) => view(g, 'idling')),
-      ...pausedGames.map((g) => view(g, 'paused')),
+      ...rt.session.idling.map((g) => view(g, 'idling')),
+      ...rt.session.paused.map((g) => view(g, 'paused')),
     ];
   },
   // Adds a library game to the live selection; unknown or already-selected ids,
   // and anything past Steam's 32-game limit, are ignored.
   add(appid: number): void {
-    const game = gamesById.get(appid);
-    const current = getGameCurrentSelection();
+    const game = rt.library.byId.get(appid);
+    const current = rt.session.selection();
     if (!game || current.some((g) => g.appid === appid) || current.length >= MAX_IDLE_GAMES) return;
     applyRemoteSelection([...current, { appid, name: game.name }]);
   },
   // Drops a game from the live selection; unselected ids are ignored.
   remove(appid: number): void {
-    const current = getGameCurrentSelection();
+    const current = rt.session.selection();
     if (!current.some((g) => g.appid === appid)) return;
     applyRemoteSelection(current.filter((g) => g.appid !== appid));
   },
 };
-
-// Moves user-paused games back into rotation once the block is over.
-function releasePausedGames(): void {
-  idlingGames.push(...pausedGames);
-  pausedGames = [];
-}
 
 // Handles state changes when another session plays a game on this account.
 // Steam blocks this whole session while that happens, so every idling game
@@ -1121,102 +1023,84 @@ function releasePausedGames(): void {
 // transitions: Steam also echoes playingState(false, appid) after our own
 // gamesPlayed calls, and re-sending on every echo would loop forever.
 function handlePlayingState(blocked: boolean, playingApp: number): void {
-  if (blocked === playingBlocked) return;
-  playingBlocked = blocked;
-  const now = new Date();
+  // While waiting the clocks are already frozen: no banking, no restart.
+  const changed = rt.session.setBlocked(blocked, playingApp, {
+    bank: !rt.isWaitingForResume,
+    restartClocks: !rt.isWaitingForResume,
+  });
+  if (!changed) return;
 
   if (blocked) {
-    if (!isWaitingForResume) bankElapsed(idlingGames, now);
     // Server playtime is flat for the whole block; a baseline from before it
     // would read as a zombie strike on the first probe afterwards.
     zombieBaseline = null;
     zombieStrike = 0;
-
-    const idleIndex = idlingGames.findIndex((g) => g.appid === playingApp);
-    if (idleIndex !== -1) {
-      const [pausedGame] = idlingGames.splice(idleIndex, 1);
-      if (pausedGame) pausedGames.push(pausedGame);
-    }
-  } else {
-    releasePausedGames();
-    if (!isWaitingForResume) {
-      for (const game of idlingGames) game.startTime = now;
-    }
   }
 
   // In edit mode the selector owns the screen and enterEditMode re-sends the
   // final list itself; the array changes above still apply.
-  if (isInEditMode || isWaitingForResume) return;
+  if (rt.isInEditMode || rt.isWaitingForResume) return;
   // Steam ignores gamesPlayed while blocked and does not restore the list on
   // its own afterwards: re-send on unblock, or idling silently stays dead until
   // the next change (up to the 4h flush).
-  if (!blocked) client.setGamesPlaying(idlingGames.map((g) => g.appid));
+  if (!blocked) rt.client.setGamesPlaying(rt.session.idling.map((g) => g.appid));
   renderStatus();
 }
 
 // Initializes the idling session and starts the display loop
 function startIdling(games: GameSelection[]): void {
-  isIdling = true;
-  startTime = new Date();
-
-  idlingGames = games.map((game) => {
-    const steamGame = gamesById.get(game.appid);
-    return createIdlingGame(game, steamGame);
-  });
-  pausedGames = [];
+  rt.isIdling = true;
+  rt.idlingStartedAt = new Date();
 
   // Steam reports a block right after logon, before this handler existed.
-  playingBlocked = client.isPlayingBlocked;
+  rt.session.start(games, rt.library.byId, rt.client.isPlayingBlocked);
 
   const appIds = games.map((g) => g.appid);
-  client.setGamesPlaying(appIds);
+  rt.client.setGamesPlaying(appIds);
 
   setupKeyboardInput();
 
   renderStatus();
   startDisplayLoop();
 
-  client.onPlayingState(handlePlayingState);
+  rt.client.onPlayingState(handlePlayingState);
 
-  client.onDisconnected((eresult, msg) => {
-    if (isShuttingDown) return;
+  rt.client.onDisconnected((eresult, msg) => {
+    if (rt.isShuttingDown) return;
     const isTakeover = TAKEOVER_ERESULTS.has(eresult);
     // A kick that lands while our flush relog is in flight is still a takeover:
     // the flush is over either way and the pause must be announced.
-    if (isTakeover) selfInitiatedRelog = false;
+    if (isTakeover) rt.selfInitiatedRelog = false;
     if (isTakeover && lastGoodPlaytime) takeoverDriftPending = true;
-    const reason = selfInitiatedRelog
+    const reason = rt.selfInitiatedRelog
       ? 'flushing playtime (scheduled relog)'
       : isTakeover
       ? 'player active on this account elsewhere'
       : `disconnected (${msg}, eresult ${eresult})`;
-    if (!isInEditMode && !selfInitiatedRelog) {
+    if (!rt.isInEditMode && !rt.selfInitiatedRelog) {
       console.log(`\nDisconnected from Steam: ${msg} (${eresult})`);
     }
     enterWaitingState(reason, isTakeover);
   });
 
-  client.onError((err) => {
-    if (isShuttingDown) return;
+  rt.client.onError((err) => {
+    if (rt.isShuttingDown) return;
     const isTakeover = isTakeoverError(err);
-    if (isTakeover) selfInitiatedRelog = false;
+    if (isTakeover) rt.selfInitiatedRelog = false;
     if (isTakeover && lastGoodPlaytime) takeoverDriftPending = true;
     const reason = isTakeover
       ? 'player active on this account elsewhere'
       : `Steam error: ${err.message}`;
-    if (!isInEditMode) console.log(`\nSteam error: ${err.message}`);
+    if (!rt.isInEditMode) console.log(`\nSteam error: ${err.message}`);
     enterWaitingState(reason, isTakeover);
   });
 
   // Catches steam-user's silent auto-relogins so we restore idling promptly
   // instead of waiting for the 60s attemptResume tick (which would then race
   // with the now-connected client and crash).
-  client.onLoggedOn(() => {
-    if (isWaitingForResume) {
-      if (resumeTimer) {
-        clearTimeout(resumeTimer);
-        resumeTimer = null;
-      }
+  rt.client.onLoggedOn(() => {
+    if (rt.isWaitingForResume) {
+      rt.timers.clear('resume');
       transientFailureCount = 0;
       rateLimitCount = 0;
       restoreIdling();
@@ -1228,24 +1112,24 @@ function startIdling(games: GameSelection[]): void {
   scheduleFlush();
   scheduleZombieCheck();
 
-  discord.send(`▶️ Idling started — ${idlingGames.length} games`);
+  rt.discord.send(`▶️ Idling started — ${rt.session.idling.length} games`);
 
   // The bot connects only once idling has started, so a --setup-discord run or
   // a session still at the selector never answers commands for this account.
-  const botConfig = discord.botConfig();
-  if (botConfig) botHandle = startBot(botConfig, controlPanel, discord);
+  const botConfig = rt.discord.botConfig();
+  if (botConfig) rt.botHandle = startBot(botConfig, controlPanel, discord);
   // The status box goes live with idling too; it talks REST, so it keeps
   // updating while the Gateway reconnects
   const statusChannelId = botConfig?.statusChannelId;
-  if (botConfig && statusChannelId && !statusPanel) {
-    statusPanel = new StatusPanel({ ...botConfig, statusChannelId }, statusSnapshot, { version: packageVersion() });
-    statusPanel.start();
+  if (botConfig && statusChannelId && !rt.statusPanel) {
+    rt.statusPanel = new StatusPanel({ ...botConfig, statusChannelId }, statusSnapshot, { version: packageVersion() });
+    rt.statusPanel.start();
   }
 
   // A kick or drop between login and here (e.g. while the selector was open)
   // had no handler yet; without this the screen would say "Idling" forever
   // while nothing is played and no resume is ever attempted.
-  if (!client.isConnected) {
+  if (!rt.client.isConnected) {
     enterWaitingState('disconnected before idling started');
   }
 }
@@ -1253,44 +1137,20 @@ function startIdling(games: GameSelection[]): void {
 // Graceful shutdown handler that saves state and logs out. exitCode lets the
 // auto-resume give-up paths signal a restartable failure (1) vs a clean stop (0).
 function handleShutdown(exitCode = 0): void {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
+  if (rt.isShuttingDown) return;
+  rt.isShuttingDown = true;
   console.log('\n');
 
-  if (resumeTimer) {
-    clearTimeout(resumeTimer);
-    resumeTimer = null;
-  }
-  if (resumeNotifyTimer) {
-    clearTimeout(resumeNotifyTimer);
-    resumeNotifyTimer = null;
-  }
-  if (pauseNotifyTimer) {
-    clearTimeout(pauseNotifyTimer);
-    pauseNotifyTimer = null;
-  }
-  if (midnightTimer) {
-    clearTimeout(midnightTimer);
-    midnightTimer = null;
-  }
-  if (flushTimer) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
-  }
-  if (zombieTimer) {
-    clearTimeout(zombieTimer);
-    zombieTimer = null;
-  }
-  stopDisplayLoop();
+  rt.timers.clearAll();
 
   // Best effort: a throw here must not skip the exit timer below.
   try {
-    if (isIdling) {
-      client.stopPlaying();
-      isIdling = false;
+    if (rt.isIdling) {
+      rt.client.stopPlaying();
+      rt.isIdling = false;
     }
-    if (client.isLoggedIn || client.isConnected) {
-      client.logout();
+    if (rt.client.isLoggedIn || rt.client.isConnected) {
+      rt.client.logout();
     }
   } catch (err) {
     console.error('Logout failed:', (err as Error).message);
@@ -1299,10 +1159,10 @@ function handleShutdown(exitCode = 0): void {
   // Fallback "quit by user" only fires when idling had started and no give-up
   // path already sent a stop message
   const finalMessage =
-    !stopNotified && startTime ? discord.send('🛑 Idling stopped — quit by user') : Promise.resolve();
+    !rt.stopNotified && rt.idlingStartedAt ? rt.discord.send('🛑 Idling stopped — quit by user') : Promise.resolve();
 
   // The status box turns red; stop() never rejects and is capped at 4s
-  const panelStopped = statusPanel ? statusPanel.stop() : Promise.resolve();
+  const panelStopped = rt.statusPanel ? rt.statusPanel.stop() : Promise.resolve();
 
   showGoodbye();
   // Grace so the clean logOff socket write (the playtime-commit trigger) can
@@ -1316,14 +1176,14 @@ function handleShutdown(exitCode = 0): void {
 // Closes the Gateway after the final notification went out. Never rejects and
 // is time-capped, so both exit paths always reach process.exit.
 function stopBot(): Promise<void> {
-  if (!botHandle) return Promise.resolve();
+  if (!rt.botHandle) return Promise.resolve();
   const cap = new Promise<void>((resolve) => setTimeout(resolve, BOT_DESTROY_TIMEOUT_MS));
-  return Promise.race([botHandle.destroy().catch(() => {}), cap]);
+  return Promise.race([rt.botHandle.destroy().catch(() => {}), cap]);
 }
 
 // Secrets that error text must never carry to the console or Discord
 function discordSecrets(): string[] {
-  const token = discord.botConfig()?.token;
+  const token = rt.discord.botConfig()?.token;
   return token ? [token] : [];
 }
 
@@ -1341,43 +1201,37 @@ function handleRejection(reason: unknown): void {
 // Mitigation C: last-resort flush on a fatal error. Best-effort stop+logout to
 // salvage the in-flight session's playtime tail before exiting.
 function handleCrash(err: unknown): void {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
+  if (rt.isShuttingDown) return;
+  rt.isShuttingDown = true;
   // Stack text only: logging the whole object would print library-attached
   // fields such as a Discord request URL, which can embed an interaction token.
   const detail = err instanceof Error ? err.stack ?? err.message : String(err);
   console.error('\nFatal error:', redactSecrets(detail, discordSecrets()));
 
-  if (resumeTimer) clearTimeout(resumeTimer);
-  if (resumeNotifyTimer) clearTimeout(resumeNotifyTimer);
-  if (pauseNotifyTimer) clearTimeout(pauseNotifyTimer);
-  if (midnightTimer) clearTimeout(midnightTimer);
-  if (flushTimer) clearTimeout(flushTimer);
-  if (zombieTimer) clearTimeout(zombieTimer);
-  if (updateInterval) clearInterval(updateInterval);
+  rt.timers.clearAll();
 
   try {
-    if (isIdling) client.stopPlaying();
+    if (rt.isIdling) rt.client.stopPlaying();
   } catch {
     // ignore — best effort
   }
   try {
-    if (client.isLoggedIn || client.isConnected) client.logout();
+    if (rt.client.isLoggedIn || rt.client.isConnected) rt.client.logout();
   } catch {
     // ignore — best effort
   }
 
   // Redacted like the console copy: this text goes to Discord
   const message = redactSecrets(err instanceof Error ? err.message : String(err), discordSecrets());
-  const finalMessage = stopNotified
+  const finalMessage = rt.stopNotified
     ? Promise.resolve()
-    : discord.send(
-        startTime
+    : rt.discord.send(
+        rt.idlingStartedAt
           ? `🛑 Idling stopped — crashed (${message}).`
           : `🛑 steamidler crashed before idling started (${message}).`
       );
 
-  const panelStopped = statusPanel ? statusPanel.stop() : Promise.resolve();
+  const panelStopped = rt.statusPanel ? rt.statusPanel.stop() : Promise.resolve();
   const grace = new Promise((resolve) => setTimeout(resolve, CRASH_FLUSH_GRACE_MS));
   void Promise.all([grace, finalMessage, panelStopped])
     .then(() => stopBot())
