@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { writeFileAtomic } from './atomicWrite.js';
 
-const CONFIG_DIR = join(homedir(), '.steam-idler');
+export const CONFIG_DIR = join(homedir(), '.steam-idler');
 
 interface FavoritesData {
   favorites: number[];
@@ -15,7 +15,7 @@ function getFavoritesPath(accountName: string): string {
 }
 
 // Ensures the config directory exists, creating it if necessary
-function ensureConfigDir(): void {
+export function ensureConfigDir(): void {
   if (!existsSync(CONFIG_DIR)) {
     mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   }
