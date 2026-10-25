@@ -16,7 +16,7 @@ const SC = '523456789012345678';
 const M1 = '623456789012345678';
 const M2 = '723456789012345678';
 const BOT = { token: TOKEN, applicationId: '123456789012345678', ownerId: '223456789012345678', guildId: '323456789012345678', channelId: '423456789012345678', statusChannelId: SC };
-const SNAP = () => ({ state: 'idling', waitingReason: null, games: [{ name: 'Hades', state: 'idling', exempt: false, totalMinutes: 600, gainedMs: 60_000, cooldownEndsAt: null }] });
+const SNAP = () => ({ state: 'idling', waitingReason: null, games: [{ name: 'Hades', state: 'idling', totalMinutes: 600, gainedMs: 60_000 }] });
 const OPTS = { version: '0.1.0', timeoutMs: 100, intervalMs: 60_000, minGapMs: 0, stopCapMs: 300 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

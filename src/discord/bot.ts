@@ -77,7 +77,7 @@ async function handleInteraction(interaction: Interaction, bot: BotConfig, panel
   let text: string;
   if (interaction.commandName === 'add') text = runAdd(panel, interaction.options.getString('game', true));
   else if (interaction.commandName === 'remove') text = runRemove(panel, interaction.options.getString('game', true));
-  else if (interaction.commandName === 'status') text = formatStatus(panel, new Date());
+  else if (interaction.commandName === 'status') text = formatStatus(panel);
   else text = 'Unknown command.';
   await replyPrivately(interaction, text);
 }

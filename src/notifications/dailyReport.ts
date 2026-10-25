@@ -7,7 +7,6 @@ import type { IdlingGame } from '../types/index.js';
 export function formatDailyReport(
   idling: IdlingGame[],
   paused: IdlingGame[],
-  cooling: IdlingGame[],
   dayStartAccumulatedMs: Map<number, number>,
   date: Date,
   isFrozen = false,
@@ -17,9 +16,6 @@ export function formatDailyReport(
   const dateStr = date.toLocaleDateString('en-CA'); // YYYY-MM-DD
   const lines: string[] = [];
   lines.push(`📊 Daily idling report — ${dateStr}`);
-
-  const all = [...idling, ...paused, ...cooling];
-  const exempt = all.find((g) => g.nextPauseAtMs === null);
 
   const todayGain = (game: IdlingGame, accumulated: number): string =>
     formatHM(accumulated - (dayStartAccumulatedMs.get(game.appid) ?? 0));
@@ -38,28 +34,12 @@ export function formatDailyReport(
     }
   }
 
-  if (cooling.length > 0) {
-    lines.push('');
-    lines.push(`Cooldown (${cooling.length}):`);
-    for (const game of cooling) {
-      const remaining = game.pauseUntil ? game.pauseUntil.getTime() - now : 0;
-      lines.push(
-        `• ${game.name} — +${todayGain(game, game.accumulatedMs)} today, resumes in ${formatRemaining(remaining)}`
-      );
-    }
-  }
-
   if (paused.length > 0) {
     lines.push('');
     lines.push(`User-paused (${paused.length}):`);
     for (const game of paused) {
       lines.push(`• ${game.name}`);
     }
-  }
-
-  if (exempt) {
-    lines.push('');
-    lines.push(`Exempt: ${exempt.name} ∞`);
   }
 
   return lines.join('\n');
@@ -77,10 +57,3 @@ function formatTotalH(totalMinutes: number): string {
   return `${Math.floor(totalMinutes / 60).toLocaleString()}h`;
 }
 
-function formatRemaining(ms: number): string {
-  if (ms <= 0) return 'now';
-  const totalMinutes = Math.floor(ms / 60000);
-  if (totalMinutes >= 24 * 60) return `${Math.floor(totalMinutes / (24 * 60))}d`;
-  if (totalMinutes >= 60) return `${Math.floor(totalMinutes / 60)}h`;
-  return `${totalMinutes}m`;
-}

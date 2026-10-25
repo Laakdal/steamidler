@@ -8,8 +8,6 @@ Based on [steamidled](https://github.com/louisraetz/steamidled) by louisraetz (M
 
 - Log in with a QR code from the Steam mobile app, or with username, password and Steam Guard
 - Idle up to 32 games at once (the Steam limit), including free and family-shared games
-- Per-game random idle and cooldown phases, so playtime totals diverge naturally
-- One exempt game that skips cooldowns and idles continuously
 - Pauses automatically while you play on another device and resumes afterwards
 - Reconnects on its own after connection drops, Steam outages and session takeovers
 - Renews the saved login token so a long-running session keeps working
@@ -58,7 +56,6 @@ Game selector:
 | `↑` `↓`, `PgUp` `PgDn`, `Home` `End` | Move through the list |
 | `Space` | Select or deselect a game |
 | `F` | Add or remove a favorite |
-| `X` | Mark a game as exempt from cooldowns |
 | `T` | Filter by source: all, owned, free, family-shared |
 | `/` | Search by name (`Esc` clears) |
 | `S` | Start all favorites |
@@ -87,8 +84,6 @@ A network error or Steam rate limit at startup keeps the saved login; only an ex
 
 ## How idling works
 
-Each selected game alternates between an idle phase of 7–30 days and a cooldown of 100–200 hours, with lengths chosen at random per game. The exempt game, if any, never enters cooldown.
-
 While another device plays a game on the same account, Steam blocks idling for the whole session; steamidler pauses the clocks and resumes when the other session ends. Every 4 hours it briefly logs off and on again so Steam commits the accumulated playtime, and it periodically checks that server-side playtime is actually increasing.
 
 After a disconnect it keeps retrying with exponential backoff. It stops after 30 failed reconnects, 10 rate-limited attempts, or an error that retrying cannot fix.
@@ -113,7 +108,7 @@ Setup posts a test message through the bot (and through the webhook, if given), 
 |---------|--------------|
 | `/add game:` | Starts idling a game from your library. Type part of its name and pick it from the list. |
 | `/remove game:` | Stops idling one of the selected games. |
-| `/status` | Lists what is idling, what is in cooldown and for how long, paused games, the exempt game, and a Steam disconnect if there is one. |
+| `/status` | Lists what is idling, paused games, and a Steam disconnect if there is one. |
 
 - **Only you.** Commands work only for the application's owner (for a team-owned application, the member picked at setup), and only in the chosen server. Anyone else gets "not allowed". Discord also hides the commands from members who are not server admins.
 - **Replies are private.** Only you see them.
@@ -130,7 +125,7 @@ One message in a channel of its own that shows what steamidler is doing right no
   - 🟡 waiting to resume after a disconnect, or paused while a game is played on this account elsewhere;
   - 🛑 stopped.
 - "Next update in …", counting down on your device. If the box stops updating (the server is down, the token was reset), it reads "… ago" instead, so a stale box shows itself.
-- Sections for 🎮 idling games (total hours and time gained this session), ❄️ games in cooldown (time left) and ⏸️ paused games. The exempt game is marked `∞`.
+- Sections for 🎮 idling games (total hours and time gained this session) and ⏸️ paused games.
 
 It updates every minute, and within about 5 seconds of `/add`, `/remove`, a disconnect or a resume. A restart keeps editing the same message; if you delete it, a new one appears within a minute. When steamidler stops, the box turns red.
 
@@ -140,12 +135,12 @@ To turn it on, run `--setup-discord` again, pick a channel at **Live status chan
 
 | Message | When |
 |---------|------|
-| ▶️ Idling started | Idling begins, with the game count and the exempt game |
+| ▶️ Idling started | Idling begins, with the game count |
 | ⏸️ Idling paused | A disconnect or session takeover lasts longer than 30 seconds |
 | ▶️ Idling resumed | The reconnection has held for 90 seconds |
 | 🔄 flush | The 4-hourly relog that commits playtime |
 | ⚠️ Zombie session | Steam stopped crediting playtime and a reconnect is forced |
-| 📊 Daily idling report | Local midnight: playtime gained per game, cooldowns, exempt game |
+| 📊 Daily idling report | Local midnight: playtime gained per game |
 | 🛑 Idling stopped | Quit, crash, unrecoverable error, or a failed headless start |
 | ⚠️ Discord bot offline | Sent through the backup webhook when the bot's token is rejected, it loses access to the channel, or it has been disconnected from Discord for 2 minutes. Notifications keep coming through the webhook. |
 | ✅ Discord bot back online | The bot reconnected after an outage; commands work again |
@@ -167,7 +162,7 @@ All state is stored in `~/.steam-idler/`:
 ```
 ~/.steam-idler/
 ├── credentials.json          # Saved Steam login token
-├── favorites-<account>.json  # Favorites and the exempt game
+├── favorites-<account>.json  # Favorites
 ├── discord.json              # Discord bot token, IDs, optional backup webhook
 └── discord-status.json       # Which message is the live status box (no secrets)
 ```

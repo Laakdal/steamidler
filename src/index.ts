@@ -24,7 +24,7 @@ import {
   showGoodbye,
   showError,
 } from './ui/display.js';
-import { loadFavorites, loadExempt } from './storage/favorites.js';
+import { loadFavorites } from './storage/favorites.js';
 import { loadCredentials, saveCredentials } from './storage/credentials.js';
 import { DiscordNotifier } from './discord/notifier.js';
 import { runDiscordSetup } from './discord/setup.js';
@@ -107,7 +107,6 @@ let statusPanel: StatusPanel | null = null;
 let isIdling = false;
 let idlingGames: IdlingGame[] = [];
 let pausedGames: IdlingGame[] = [];
-let pausingGames: IdlingGame[] = [];
 let allGames: SteamGame[] = [];
 let gamesById = new Map<number, SteamGame>();
 let startTime: Date | null = null;
@@ -135,7 +134,6 @@ let stopNotified = false;
 // idling game, not just the one being played.
 let playingBlocked = false;
 let accountName: string = '';
-let exemptAppId: number | null = null;
 let dayStartAccumulatedMs = new Map<number, number>();
 let transientFailureCount = 0;
 let rateLimitCount = 0;
@@ -207,7 +205,7 @@ function scheduleResumeNotification(): void {
 // Renders the status table from current state. Every state change repaints
 // through here, so it also asks the Discord status box for a prompt update.
 function renderStatus(): void {
-  showIdlingStatus(idlingGames, pausedGames, pausingGames, {
+  showIdlingStatus(idlingGames, pausedGames, {
     waitingReason: isWaitingForResume ? waitingReason : null,
     playingBlocked,
     showKeyHints: !isHeadless,
@@ -226,10 +224,8 @@ function statusSnapshot(): StatusSnapshot {
     return {
       name: g.name,
       state,
-      exempt: g.nextPauseAtMs === null,
       totalMinutes: g.initialPlaytime + Math.floor(gainedMs / 60000),
       gainedMs,
-      cooldownEndsAt: state === 'cooldown' ? g.pauseUntil : null,
     };
   };
   return {
@@ -237,21 +233,18 @@ function statusSnapshot(): StatusSnapshot {
     waitingReason: isWaitingForResume ? waitingReason : null,
     games: [
       ...idlingGames.map((g) => view(g, 'idling')),
-      ...pausingGames.map((g) => view(g, 'cooldown')),
       ...pausedGames.map((g) => view(g, 'paused')),
     ],
   };
 }
 
-// (Re)starts the 60s tick: advances the randomizer and refreshes the table. On a
-// non-TTY (systemd/journald) the table is only re-printed when something
-// changed, instead of ~35 lines every minute.
+// (Re)starts the 60s tick that refreshes the table. On a non-TTY
+// (systemd/journald) nothing is printed, instead of ~35 lines every minute.
 function startDisplayLoop(): void {
   if (updateInterval) clearInterval(updateInterval);
   updateInterval = setInterval(() => {
     if (!startTime || isInEditMode) return;
-    const changed = tickRandomizer();
-    if (changed || process.stdout.isTTY) renderStatus();
+    if (process.stdout.isTTY) renderStatus();
   }, 60000);
 }
 
@@ -263,66 +256,10 @@ function stopDisplayLoop(): void {
   }
 }
 
-// 7-30 days, the active idle phase length before a game enters cooldown
-function randomIdlePhaseMs(): number {
-  return Math.floor((168 + Math.random() * 552) * HOURS_MS);
-}
-
-// 100-200 hours, the cooldown length before a game rejoins the idle pool
-function randomCooldownMs(): number {
-  return Math.floor((100 + Math.random() * 100) * HOURS_MS);
-}
-
 // Exponential backoff with full jitter; attempt is 1-based.
 function backoffMs(attempt: number, capMs: number): number {
   const exp = Math.min(capMs, BACKOFF_BASE_MS * 2 ** Math.max(0, attempt - 1));
   return Math.floor(exp / 2 + Math.random() * (exp / 2));
-}
-
-// Moves games between idling/pausing arrays based on per-game random schedules.
-// Returns true when the sets changed. Skipped while frozen: no playtime accrues,
-// so no idle phase can complete.
-function tickRandomizer(): boolean {
-  if (isFrozen()) return false;
-  const now = new Date();
-  let mutated = false;
-
-  const stillIdling: IdlingGame[] = [];
-  for (const game of idlingGames) {
-    if (game.nextPauseAtMs === null) {
-      stillIdling.push(game);
-      continue;
-    }
-    const elapsedMs = game.accumulatedMs + (now.getTime() - game.startTime.getTime());
-    if (elapsedMs >= game.nextPauseAtMs) {
-      game.accumulatedMs = elapsedMs;
-      game.startTime = now;
-      game.pauseUntil = new Date(now.getTime() + randomCooldownMs());
-      pausingGames.push(game);
-      mutated = true;
-    } else {
-      stillIdling.push(game);
-    }
-  }
-  if (mutated) idlingGames = stillIdling;
-
-  const stillCooling: IdlingGame[] = [];
-  for (const game of pausingGames) {
-    if (game.pauseUntil && now >= game.pauseUntil) {
-      game.pauseUntil = null;
-      game.startTime = now;
-      game.nextPauseAtMs = game.accumulatedMs + randomIdlePhaseMs();
-      idlingGames.push(game);
-      mutated = true;
-    } else {
-      stillCooling.push(game);
-    }
-  }
-  if (mutated) {
-    pausingGames = stillCooling;
-    client.setGamesPlaying(idlingGames.map((g) => g.appid));
-  }
-  return mutated;
 }
 
 // Recognises both shapes steam-user may surface a session-takeover as: a numeric
@@ -494,7 +431,7 @@ function restoreIdling(): void {
   // "unblocked" event on logon, and its echo after gamesPlayed is not one either.
   playingBlocked = false;
   const now = new Date();
-  releasePausedGames(now);
+  releasePausedGames();
   for (const game of idlingGames) game.startTime = now;
   client.setGamesPlaying(idlingGames.map((g) => g.appid));
   if (!isInEditMode) {
@@ -560,7 +497,6 @@ function scheduleDailyReport(): void {
     const report = formatDailyReport(
       idlingGames,
       pausedGames,
-      pausingGames,
       dayStartAccumulatedMs,
       endedDay,
       isFrozen()
@@ -572,7 +508,7 @@ function scheduleDailyReport(): void {
 }
 
 // Captures each game's current accumulated playtime for tomorrow's "today gain"
-// calculation. Only idling games have a live delta; user-paused and cooldown
+// calculation. Only idling games have a live delta; user-paused
 // games are frozen at accumulatedMs (their startTime is stale by design).
 function snapshotDayStart(): void {
   dayStartAccumulatedMs.clear();
@@ -584,7 +520,7 @@ function snapshotDayStart(): void {
       : game.accumulatedMs + (now - game.startTime.getTime());
     dayStartAccumulatedMs.set(game.appid, live);
   }
-  for (const game of [...pausedGames, ...pausingGames]) {
+  for (const game of pausedGames) {
     dayStartAccumulatedMs.set(game.appid, game.accumulatedMs);
   }
 }
@@ -871,8 +807,6 @@ async function runHeadless(): Promise<void> {
     );
   }
 
-  exemptAppId = loadExempt(accountName);
-
   const matchingGames: GameSelection[] = allGames
     .filter((g) => favoriteIds.includes(g.appid))
     .map((g) => ({ appid: g.appid, name: g.name }));
@@ -900,12 +834,7 @@ async function runHeadless(): Promise<void> {
     );
   }
 
-  const exemptName =
-    exemptAppId && selectedGames.some((g) => g.appid === exemptAppId)
-      ? gamesById.get(exemptAppId)?.name ?? null
-      : null;
   console.log(`Starting ${selectedGames.length} favorite game(s)...`);
-  if (exemptName) console.log(`Exempt from randomizer: ${exemptName}`);
   startIdling(selectedGames);
 }
 
@@ -961,7 +890,7 @@ async function runInteractive(): Promise<void> {
     process.exit(1);
   }
 
-  const { selectedGames, exemptAppId: selectedExempt, aborted } = await selectGames(
+  const { selectedGames, aborted } = await selectGames(
     allGames,
     accountName
   );
@@ -977,7 +906,6 @@ async function runInteractive(): Promise<void> {
     return;
   }
 
-  exemptAppId = selectedExempt;
   startIdling(selectedGames);
 }
 
@@ -1034,11 +962,7 @@ function setupKeyboardInput(): void {
 }
 
 // Creates an IdlingGame object from a GameSelection
-function createIdlingGame(
-  game: GameSelection,
-  steamGame?: SteamGame,
-  isExempt = false
-): IdlingGame {
+function createIdlingGame(game: GameSelection, steamGame?: SteamGame): IdlingGame {
   const initialPlaytime = steamGame?.playtime_forever ?? 0;
   return {
     appid: game.appid,
@@ -1046,14 +970,12 @@ function createIdlingGame(
     initialPlaytime,
     startTime: new Date(),
     accumulatedMs: 0,
-    nextPauseAtMs: isExempt ? null : randomIdlePhaseMs(),
-    pauseUntil: null,
   };
 }
 
 // Converts IdlingGame array back to GameSelection array for the selector
 function getGameCurrentSelection(): GameSelection[] {
-  return [...idlingGames, ...pausedGames, ...pausingGames].map((g) => ({
+  return [...idlingGames, ...pausedGames].map((g) => ({
     appid: g.appid,
     name: g.name,
   }));
@@ -1075,11 +997,7 @@ async function enterEditMode(): Promise<void> {
   console.clear();
 
   const currentSelection = getGameCurrentSelection();
-  const {
-    selectedGames: newSelection,
-    exemptAppId: newExemptAppId,
-    aborted,
-  } = await selectGames(allGames, accountName, currentSelection);
+  const { selectedGames: newSelection, aborted } = await selectGames(allGames, accountName, currentSelection);
 
   // Ctrl+C inside the selector: the idling-screen key handler already started
   // the graceful shutdown; do not repaint over the goodbye message.
@@ -1092,7 +1010,7 @@ async function enterEditMode(): Promise<void> {
   if (newSelection.length === 0) {
     showError('No games selected - keeping current selection');
   } else {
-    installSelection(newSelection, newExemptAppId);
+    installSelection(newSelection);
   }
 
   // Always re-send on the way out, selection changed or not: an unblock that
@@ -1121,29 +1039,24 @@ async function enterEditMode(): Promise<void> {
 // Discord commands alike. A game the diff creates (new, or removed and re-added
 // the same day) drops its old day-start snapshot, so the daily report counts it
 // from zero instead of clamping a negative gain to 0m.
-function installSelection(newSelection: GameSelection[], newExemptAppId: number | null): void {
-  const previous = new Set([...idlingGames, ...pausingGames, ...pausedGames]);
+function installSelection(newSelection: GameSelection[]): void {
+  const previous = new Set([...idlingGames, ...pausedGames]);
   const next = computeSelection(
-    { idling: idlingGames, pausing: pausingGames, paused: pausedGames },
+    { idling: idlingGames, paused: pausedGames },
     newSelection,
-    newExemptAppId,
-    (sel, isExempt) => createIdlingGame(sel, gamesById.get(sel.appid), isExempt),
-    randomIdlePhaseMs,
-    new Date()
+    (sel) => createIdlingGame(sel, gamesById.get(sel.appid))
   );
   idlingGames = next.idling;
   pausedGames = next.paused;
-  pausingGames = next.pausing;
-  exemptAppId = newExemptAppId;
-  for (const game of [...idlingGames, ...pausingGames, ...pausedGames]) {
+  for (const game of [...idlingGames, ...pausedGames]) {
     if (!previous.has(game)) dayStartAccumulatedMs.delete(game.appid);
   }
 }
 
 // Applies a changed selection from the Discord commands exactly as edit mode does.
-function applyRemoteSelection(newSelection: GameSelection[], newExemptAppId: number | null): void {
+function applyRemoteSelection(newSelection: GameSelection[]): void {
   if (!playingBlocked) bankElapsed(idlingGames);
-  installSelection(newSelection, newExemptAppId);
+  installSelection(newSelection);
   if (!isWaitingForResume) client.setGamesPlaying(idlingGames.map((g) => g.appid));
   if (!isInEditMode) renderStatus();
 }
@@ -1168,18 +1081,15 @@ const controlPanel: ControlPanel = {
   library(): { appid: number; name: string }[] {
     return allGames.map((g) => ({ appid: g.appid, name: g.name }));
   },
-  // Maps the three internal arrays to the read-only view the bot renders.
+  // Maps the two internal arrays to the read-only view the bot renders.
   selection(): SelectedGameView[] {
     const view = (g: IdlingGame, state: SelectedGameView['state']): SelectedGameView => ({
       appid: g.appid,
       name: g.name,
       state,
-      exempt: g.nextPauseAtMs === null,
-      cooldownEndsAt: state === 'cooldown' ? g.pauseUntil : null,
     });
     return [
       ...idlingGames.map((g) => view(g, 'idling')),
-      ...pausingGames.map((g) => view(g, 'cooldown')),
       ...pausedGames.map((g) => view(g, 'paused')),
     ];
   },
@@ -1189,48 +1099,19 @@ const controlPanel: ControlPanel = {
     const game = gamesById.get(appid);
     const current = getGameCurrentSelection();
     if (!game || current.some((g) => g.appid === appid) || current.length >= MAX_IDLE_GAMES) return;
-    // Adding never makes a game exempt: a stored exempt game that wasn't being
-    // idled (left unselected, or past 32 favorites) loses exempt for this session.
-    applyRemoteSelection(
-      [...current, { appid, name: game.name }],
-      exemptAppId === appid ? null : exemptAppId
-    );
+    applyRemoteSelection([...current, { appid, name: game.name }]);
   },
-  // Drops a game from the live selection, clearing exempt if it held it; unselected ids are ignored.
+  // Drops a game from the live selection; unselected ids are ignored.
   remove(appid: number): void {
     const current = getGameCurrentSelection();
     if (!current.some((g) => g.appid === appid)) return;
-    applyRemoteSelection(
-      current.filter((g) => g.appid !== appid),
-      exemptAppId === appid ? null : exemptAppId
-    );
+    applyRemoteSelection(current.filter((g) => g.appid !== appid));
   },
 };
 
-// Moves user-paused games back into rotation once the block is over. A game
-// whose idle phase was interrupted keeps its accumulated-time threshold (the
-// phase simply continues; re-rolling would keep a regularly played game out of
-// cooldown forever). A game that was in cooldown when the block started and
-// whose cooldown ran out meanwhile starts a fresh idle phase, exactly like a
-// cooldown exit in tickRandomizer — its old threshold was already reached.
-function releasePausedGames(now: Date): void {
-  const restoredIdling: IdlingGame[] = [];
-  const restoredCooling: IdlingGame[] = [];
-  for (const game of pausedGames) {
-    if (game.pauseUntil && now < game.pauseUntil) {
-      restoredCooling.push(game);
-      continue;
-    }
-    if (game.pauseUntil) {
-      game.pauseUntil = null;
-      if (game.nextPauseAtMs !== null) {
-        game.nextPauseAtMs = game.accumulatedMs + randomIdlePhaseMs();
-      }
-    }
-    restoredIdling.push(game);
-  }
-  idlingGames.push(...restoredIdling);
-  pausingGames.push(...restoredCooling);
+// Moves user-paused games back into rotation once the block is over.
+function releasePausedGames(): void {
+  idlingGames.push(...pausedGames);
   pausedGames = [];
 }
 
@@ -1255,15 +1136,9 @@ function handlePlayingState(blocked: boolean, playingApp: number): void {
     if (idleIndex !== -1) {
       const [pausedGame] = idlingGames.splice(idleIndex, 1);
       if (pausedGame) pausedGames.push(pausedGame);
-    } else {
-      const coolingIndex = pausingGames.findIndex((g) => g.appid === playingApp);
-      if (coolingIndex !== -1) {
-        const [pausedGame] = pausingGames.splice(coolingIndex, 1);
-        if (pausedGame) pausedGames.push(pausedGame);
-      }
     }
   } else {
-    releasePausedGames(now);
+    releasePausedGames();
     if (!isWaitingForResume) {
       for (const game of idlingGames) game.startTime = now;
     }
@@ -1286,10 +1161,9 @@ function startIdling(games: GameSelection[]): void {
 
   idlingGames = games.map((game) => {
     const steamGame = gamesById.get(game.appid);
-    return createIdlingGame(game, steamGame, game.appid === exemptAppId);
+    return createIdlingGame(game, steamGame);
   });
   pausedGames = [];
-  pausingGames = [];
 
   // Steam reports a block right after logon, before this handler existed.
   playingBlocked = client.isPlayingBlocked;
@@ -1354,10 +1228,7 @@ function startIdling(games: GameSelection[]): void {
   scheduleFlush();
   scheduleZombieCheck();
 
-  // Announce the exempt game only if it is actually among the idled ones
-  const exemptName = idlingGames.find((g) => g.nextPauseAtMs === null)?.name ?? null;
-  const startedSuffix = exemptName ? ` (exempt: ${exemptName})` : '';
-  discord.send(`▶️ Idling started — ${idlingGames.length} games${startedSuffix}`);
+  discord.send(`▶️ Idling started — ${idlingGames.length} games`);
 
   // The bot connects only once idling has started, so a --setup-discord run or
   // a session still at the selector never answers commands for this account.

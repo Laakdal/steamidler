@@ -7,7 +7,6 @@ const CONFIG_DIR = join(homedir(), '.steam-idler');
 
 interface FavoritesData {
   favorites: number[];
-  exemptAppId?: number | null;
 }
 
 // Constructs the path to an account-specific favorites JSON file
@@ -22,20 +21,19 @@ function ensureConfigDir(): void {
   }
 }
 
-// Reads the favorites file with defaults so writes can preserve sibling fields
+// Reads the favorites file; an exemptAppId left by an older version is ignored
 function readData(accountName: string): FavoritesData {
   const filePath = getFavoritesPath(accountName);
   if (!existsSync(filePath)) {
-    return { favorites: [], exemptAppId: null };
+    return { favorites: [] };
   }
   try {
     const parsed = JSON.parse(readFileSync(filePath, 'utf-8')) as FavoritesData;
     return {
       favorites: parsed.favorites || [],
-      exemptAppId: parsed.exemptAppId ?? null,
     };
   } catch {
-    return { favorites: [], exemptAppId: null };
+    return { favorites: [] };
   }
 }
 
@@ -63,16 +61,4 @@ export function saveFavorites(accountName: string, favorites: number[]): boolean
 // Loads favorite game IDs from the JSON file, returning empty array if not found
 export function loadFavorites(accountName: string): number[] {
   return readData(accountName).favorites;
-}
-
-// Loads the exempt appid (game excluded from the randomizer), or null if none
-export function loadExempt(accountName: string): number | null {
-  return readData(accountName).exemptAppId ?? null;
-}
-
-// Saves the exempt appid (or null to clear); false if it could not be written
-export function saveExempt(accountName: string, exemptAppId: number | null): boolean {
-  const data = readData(accountName);
-  data.exemptAppId = exemptAppId;
-  return writeData(accountName, data);
 }

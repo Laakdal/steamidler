@@ -4,11 +4,9 @@ export type PanelState = 'starting' | 'idling' | 'waiting' | 'blocked' | 'stoppe
 
 export interface PanelGame {
   name: string;
-  state: 'idling' | 'cooldown' | 'paused';
-  exempt: boolean;
+  state: 'idling' | 'paused';
   totalMinutes: number;
   gainedMs: number;
-  cooldownEndsAt: Date | null;
 }
 
 export interface StatusSnapshot {
@@ -36,7 +34,6 @@ const COLORS: Record<PanelState, number> = {
 const FENCE = '```';
 const MAX_FIELD_VALUE = 1024;
 const NAME_WIDTH = 24;
-const EXEMPT_SUFFIX = ' ∞';
 // A field continuing a section needs a name, and Discord rejects an empty one
 const CONTINUED = '​';
 // The waiting reason quotes Steam's error text, which has no length bound of its own
@@ -53,10 +50,8 @@ function clip(text: string, max: number): string {
 // newline would break the row, so both are neutralised instead of escaped.
 function rowName(game: PanelGame): string {
   const clean = game.name.replace(/`/g, 'ˋ').replace(/[\r\n\t\u0000-\u001f]/g, ' ');
-  const width = game.exempt ? NAME_WIDTH - EXEMPT_SUFFIX.length : NAME_WIDTH;
-  const clipped = clip(clean, width);
-  const padding = Math.max(0, NAME_WIDTH - Array.from(clipped).length - (game.exempt ? EXEMPT_SUFFIX.length : 0));
-  return (game.exempt ? clipped + EXEMPT_SUFFIX : clipped) + ' '.repeat(padding);
+  const clipped = clip(clean, NAME_WIDTH);
+  return clipped + ' '.repeat(Math.max(0, NAME_WIDTH - Array.from(clipped).length));
 }
 
 // "1,234h", like the terminal table's Total column
@@ -69,16 +64,6 @@ function formatGained(ms: number): string {
   const minutes = Math.max(0, Math.floor(ms / 60_000));
   const h = Math.floor(minutes / 60);
   return h > 0 ? `+${h}h ${String(minutes % 60).padStart(2, '0')}m` : `+${minutes}m`;
-}
-
-// "3d 4h" past a day, else "5h 12m" / "12m"; an end already passed reads 0m
-// until the next randomizer tick moves the game back
-function formatLeft(ms: number): string {
-  const minutes = Math.max(0, Math.floor(ms / 60_000));
-  const days = Math.floor(minutes / 1440);
-  const h = Math.floor((minutes % 1440) / 60);
-  if (days > 0) return `${days}d ${h}h`;
-  return h > 0 ? `${h}h ${String(minutes % 60).padStart(2, '0')}m` : `${minutes}m`;
 }
 
 // Turns a section's rows into code-block fields of at most 1024 characters;
@@ -119,7 +104,6 @@ function stateLine(snap: StatusSnapshot, idlingCount: number): string {
 // clipped reason the whole embed stays far below Discord's 6000-character cap.
 export function buildStatusEmbed(snap: StatusSnapshot, now: Date, nextUpdateAt: Date | null, version: string): Embed {
   const idling = snap.games.filter((g) => g.state === 'idling');
-  const cooldown = snap.games.filter((g) => g.state === 'cooldown');
   const paused = snap.games.filter((g) => g.state === 'paused');
 
   let description = stateLine(snap, idling.length);
@@ -133,12 +117,6 @@ export function buildStatusEmbed(snap: StatusSnapshot, now: Date, nextUpdateAt: 
     ...sectionFields(
       `🎮 Idling (${idling.length})`,
       idling.map((g) => `${rowName(g)}  ${formatTotal(g.totalMinutes).padStart(8)}  ${formatGained(g.gainedMs)}`)
-    ),
-    ...sectionFields(
-      `❄️ Cooldown (${cooldown.length})`,
-      cooldown.map(
-        (g) => `${rowName(g)}  ${formatLeft(g.cooldownEndsAt ? g.cooldownEndsAt.getTime() - now.getTime() : 0)} left`
-      )
     ),
     ...sectionFields(
       `⏸️ Paused (${paused.length})`,

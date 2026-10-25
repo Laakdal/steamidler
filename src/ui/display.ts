@@ -5,7 +5,6 @@ import type { IdlingGame } from '../types/index.js';
 // Table column widths include 1 char of padding on each side
 const NAME_COL_WIDTH = 38;
 const NAME_MAX_LENGTH = NAME_COL_WIDTH - 2;
-const EXEMPT_SUFFIX = ' ∞';
 
 export interface StatusOptions {
   waitingReason?: string | null; // set while disconnected and auto-resuming
@@ -60,37 +59,17 @@ function getTotalPlaytime(game: IdlingGame, isPaused: boolean): string {
   return formatPlaytimeHours(totalMinutes);
 }
 
-// Renders the Game cell: truncated name plus an ∞ marker if exempt. The marker
-// counts against the column width, otherwise cli-table3 truncates it away.
+// Renders the Game cell: the name truncated to the column width
 function nameCell(game: IdlingGame, dim = false): string {
-  const isExempt = game.nextPauseAtMs === null;
-  const maxLength = isExempt ? NAME_MAX_LENGTH - EXEMPT_SUFFIX.length : NAME_MAX_LENGTH;
   const truncated =
-    game.name.length > maxLength ? game.name.substring(0, maxLength - 3) + '...' : game.name;
-  const base = dim ? chalk.gray(truncated) : truncated;
-  return isExempt ? `${base} ${chalk.cyan('∞')}` : base;
-}
-
-// Renders the Status cell for cooldown games, with a coarse remaining-time hint
-function formatCooldownLabel(pauseUntil: Date | null): string {
-  if (!pauseUntil) return 'Cooldown';
-  const ms = pauseUntil.getTime() - Date.now();
-  if (ms <= 0) return 'Cooldown';
-  const totalMinutes = ms / 60000;
-  if (totalMinutes >= 24 * 60) {
-    return `Cooldown ${Math.floor(totalMinutes / (24 * 60))}d`;
-  }
-  if (totalMinutes >= 60) {
-    return `Cooldown ${Math.floor(totalMinutes / 60)}h`;
-  }
-  return `Cooldown ${Math.floor(totalMinutes)}m`;
+    game.name.length > NAME_MAX_LENGTH ? game.name.substring(0, NAME_MAX_LENGTH - 3) + '...' : game.name;
+  return dim ? chalk.gray(truncated) : truncated;
 }
 
 // Displays a formatted table showing the status of all idling games
 export function showIdlingStatus(
   idlingGames: IdlingGame[],
   pausedGames: IdlingGame[] = [],
-  pausingGames: IdlingGame[] = [],
   options: StatusOptions = {}
 ): void {
   const isWaiting = !!options.waitingReason;
@@ -153,20 +132,10 @@ export function showIdlingStatus(
     ]);
   }
 
-  for (const game of pausingGames) {
-    table.push([
-      nameCell(game, true),
-      chalk.gray(getTotalPlaytime(game, true)),
-      chalk.gray(formatGainedTime(game, true)),
-      chalk.cyan(formatCooldownLabel(game.pauseUntil)),
-    ]);
-  }
-
   console.log(table.toString());
 
   const parts: string[] = [];
   if (pausedGames.length > 0) parts.push(chalk.yellow(`${pausedGames.length} paused`));
-  if (pausingGames.length > 0) parts.push(chalk.cyan(`${pausingGames.length} cooling down`));
   const suffix = parts.length > 0 ? ` (${parts.join(', ')})` : '';
 
   console.log(

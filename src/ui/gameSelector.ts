@@ -1,7 +1,7 @@
 import * as readline from 'node:readline';
 import chalk from 'chalk';
 import type { SteamGame, GameSelection, GameSource, GameSelectorResult } from '../types/index.js';
-import { loadFavorites, saveFavorites, loadExempt, saveExempt } from '../storage/favorites.js';
+import { loadFavorites, saveFavorites } from '../storage/favorites.js';
 import { MAX_IDLE_GAMES } from '../constants.js';
 
 interface SelectableGame {
@@ -10,7 +10,6 @@ interface SelectableGame {
   playtime: number;
   selected: boolean;
   isFavorite: boolean;
-  isExempt: boolean;
   source: GameSource;
 }
 
@@ -38,7 +37,6 @@ export async function selectGames(
   currentSelection: GameSelection[] = []
 ): Promise<GameSelectorResult> {
   const favorites = loadFavorites(accountName);
-  const initialExempt = loadExempt(accountName);
   const currentAppIds = new Set(currentSelection.map((g) => g.appid));
   // Edit mode (a current selection exists) must reflect exactly what is idling;
   // re-adding favorites would silently undo a deliberate deselection.
@@ -51,7 +49,6 @@ export async function selectGames(
     playtime: game.playtime_forever,
     selected: isEditMode ? currentAppIds.has(game.appid) : favorites.includes(game.appid),
     isFavorite: favorites.includes(game.appid),
-    isExempt: initialExempt === game.appid,
     source: game.source,
   }));
 
@@ -78,7 +75,6 @@ export async function selectGames(
     let sourceFilter: SourceFilter = 'all';
     let searchQuery = '';
     let isSearchMode = false;
-    let currentExempt: number | null = initialExempt;
     let hint = ''; // one-shot feedback line, cleared on the next key
     // Title, counters, section headers, scroll line, hint and key help take up
     // to ~20 rows; size the list so a default 24-row terminal keeps the
@@ -115,19 +111,12 @@ export async function selectGames(
       // Count selections + source breakdown
       const selectedCount = selectableGames.filter((g) => g.selected).length;
       const counts = sourceCounts();
-      const exemptGame = selectableGames.find((g) => g.isExempt);
-      const exemptLabel = exemptGame
-        ? exemptGame.name.length > 30
-          ? exemptGame.name.substring(0, 27) + '...'
-          : exemptGame.name
-        : 'none';
       console.log(
         chalk.gray(
           `  Selected: ${selectedCount}/${MAX_IDLE_GAMES} | Favorites: ${favoriteCount} | ` +
             `Owned: ${counts.owned} ${chalk.green('$')} ${counts.free} ${chalk.magenta('↪')} ${counts.shared}`
         )
       );
-      console.log(chalk.gray(`  Exempt: ${chalk.cyan(exemptLabel)} (X to toggle)`));
       console.log(chalk.gray(`  Filter: ${chalk.cyan(FILTER_LABEL[sourceFilter])} (T to cycle)`));
       if (isSearchMode) {
         console.log(chalk.cyan(`  Search: ${searchQuery}_`));
@@ -158,13 +147,12 @@ export async function selectGames(
         const isCurrent = displayIndex === cursorIndex;
         const checkbox = game.selected ? chalk.green('[✓]') : chalk.gray('[ ]');
         const star = game.isFavorite ? chalk.yellow('★ ') : '  ';
-        const exemptMark = game.isExempt ? chalk.cyan('∞ ') : '  ';
         const badge = SOURCE_BADGE[game.source];
         const playtime = formatPlaytime(game.playtime);
         const name =
           game.name.length > 40 ? game.name.substring(0, 37) + '...' : game.name;
 
-        const line = `  ${checkbox} ${star}${exemptMark}${badge}${name} ${chalk.gray(`(${playtime})`)}`;
+        const line = `  ${checkbox} ${star}${badge}${name} ${chalk.gray(`(${playtime})`)}`;
 
         if (isCurrent) {
           console.log(chalk.bgGray.white(line));
@@ -190,7 +178,7 @@ export async function selectGames(
       if (isSearchMode) {
         console.log(chalk.gray('  Type to filter | Backspace: delete | Esc: cancel | Enter: confirm'));
       } else {
-        console.log(chalk.gray('  ↑/↓ PgUp/PgDn Home/End: Navigate | Space: Toggle | F: Favorite | X: Exempt | T: Filter | /: Search'));
+        console.log(chalk.gray('  ↑/↓ PgUp/PgDn Home/End: Navigate | Space: Toggle | F: Favorite | T: Filter | /: Search'));
         console.log(
           chalk.gray(
             isEditMode
@@ -210,7 +198,7 @@ export async function selectGames(
       // exiting mid-session.
       if (key.ctrl && key.name === 'c') {
         cleanup();
-        resolve({ selectedGames: [], exemptAppId: currentExempt, aborted: true });
+        resolve({ selectedGames: [], aborted: true });
         return;
       }
 
@@ -298,7 +286,7 @@ export async function selectGames(
         // Edit mode: leave the selection exactly as it is idling now
         if (isEditMode) {
           cleanup();
-          resolve({ selectedGames: currentSelection, exemptAppId: currentExempt });
+          resolve({ selectedGames: currentSelection });
         }
         return;
       }
@@ -376,25 +364,6 @@ export async function selectGames(
         return;
       }
 
-      if (str === 'x' || str === 'X') {
-        const game = allGames[cursorIndex];
-        if (game) {
-          if (game.isExempt) {
-            game.isExempt = false;
-            currentExempt = null;
-          } else {
-            for (const g of selectableGames) g.isExempt = false;
-            game.isExempt = true;
-            currentExempt = game.appid;
-          }
-          if (!saveExempt(accountName, currentExempt)) {
-            hint = 'Could not save exempt game — is ~/.steam-idler writable?';
-          }
-        }
-        render();
-        return;
-      }
-
       if (str === 's' || str === 'S') {
         const selectedGames = selectableGames
           .filter((g) => g.isFavorite)
@@ -406,7 +375,7 @@ export async function selectGames(
           return;
         }
         cleanup();
-        resolve({ selectedGames, exemptAppId: currentExempt });
+        resolve({ selectedGames });
         return;
       }
 
@@ -420,7 +389,7 @@ export async function selectGames(
           return;
         }
         cleanup();
-        resolve({ selectedGames, exemptAppId: currentExempt });
+        resolve({ selectedGames });
         return;
       }
     };

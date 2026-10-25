@@ -13,13 +13,13 @@ after(() => clearInterval(keepalive));
 const NOW = new Date('2026-10-23T12:00:00Z');
 const NEXT = new Date('2026-10-23T12:01:00Z');
 const H = 3600_000;
-const game = (over = {}) => ({ name: 'Stardew Valley', state: 'idling', exempt: false, totalMinutes: 125 * 60, gainedMs: 2 * H + 5 * 60_000, cooldownEndsAt: null, ...over });
+const game = (over = {}) => ({ name: 'Stardew Valley', state: 'idling', totalMinutes: 125 * 60, gainedMs: 2 * H + 5 * 60_000, ...over });
 const snap = (games, over = {}) => ({ state: 'idling', waitingReason: null, games, ...over });
 const embedSize = (em) => em.title.length + em.description.length + em.footer.text.length + em.fields.reduce((n, f) => n + f.name.length + f.value.length, 0);
 const FENCE = '```';
 
 test('idling snapshot renders state, countdown and rows', () => {
-  const em = e.buildStatusEmbed(snap([game(), game({ name: 'Hades', exempt: true })]), NOW, NEXT, '0.1.0');
+  const em = e.buildStatusEmbed(snap([game(), game({ name: 'Hades' })]), NOW, NEXT, '0.1.0');
   assert.equal(em.title, 'Steam Idler');
   assert.equal(em.color, 0x57f287);
   assert.match(em.description, /🟢 Idling 2 games/);
@@ -27,7 +27,7 @@ test('idling snapshot renders state, countdown and rows', () => {
   assert.equal(em.fields[0].name, '🎮 Idling (2)');
   assert.ok(em.fields[0].value.startsWith(FENCE + '\n') && em.fields[0].value.endsWith('\n' + FENCE));
   assert.match(em.fields[0].value, /Stardew Valley.*125h.*\+2h 05m/);
-  assert.match(em.fields[0].value, /Hades ∞/);
+  assert.match(em.fields[0].value, /Hades/);
   assert.equal(em.footer.text, 'steamidler v0.1.0');
   assert.equal(em.timestamp, NOW.toISOString());
 });
@@ -60,20 +60,14 @@ test('blocked and starting states', () => {
 });
 
 test('empty sections are omitted', () => {
-  const em = e.buildStatusEmbed(snap([game({ state: 'cooldown', cooldownEndsAt: new Date(NOW.getTime() + 5 * H + 12 * 60_000) })]), NOW, NEXT, '0.1.0');
-  assert.deepEqual(em.fields.map((f) => f.name), ['❄️ Cooldown (1)']);
-  assert.match(em.fields[0].value, /5h 12m left/);
+  const em = e.buildStatusEmbed(snap([game({ state: 'paused' })]), NOW, NEXT, '0.1.0');
+  assert.deepEqual(em.fields.map((f) => f.name), ['⏸️ Paused (1)']);
 });
 
-test('cooldown over a day shows days, and a past end shows 0m', () => {
-  const em = e.buildStatusEmbed(
-    snap([
-      game({ name: 'A', state: 'cooldown', cooldownEndsAt: new Date(NOW.getTime() + 76 * H) }),
-      game({ name: 'B', state: 'cooldown', cooldownEndsAt: new Date(NOW.getTime() - H) }),
-    ]),
-    NOW, NEXT, '0.1.0');
-  assert.match(em.fields[0].value, /A\s+3d 4h left/);
-  assert.match(em.fields[0].value, /B\s+0m left/);
+test('no cooldown field and no ∞ mark', () => {
+  const em = e.buildStatusEmbed(snap([game(), game({ name: 'Hades', state: 'paused' })]), NOW, NEXT, '0.1.0');
+  assert.deepEqual(em.fields.map((f) => f.name), ['🎮 Idling (1)', '⏸️ Paused (1)']);
+  assert.ok(!em.fields.some((f) => /∞|ooldown/.test(f.name + f.value)));
 });
 
 test('paused section lists total only', () => {
@@ -157,10 +151,8 @@ test('a long waiting reason is clipped', () => {
 
 test('clipping never splits a surrogate pair', () => {
   for (let pad = 18; pad <= 24; pad++) {
-    for (const exempt of [false, true]) {
-      const em = e.buildStatusEmbed(snap([game({ name: 'a'.repeat(pad) + '😀😀😀😀😀😀', exempt })]), NOW, NEXT, '0.1.0');
-      assert.ok(!loneSurrogate.test(em.fields[0].value), `pad ${pad} exempt ${exempt}`);
-    }
+    const em = e.buildStatusEmbed(snap([game({ name: 'a'.repeat(pad) + '😀😀😀😀😀😀' })]), NOW, NEXT, '0.1.0');
+    assert.ok(!loneSurrogate.test(em.fields[0].value), `pad ${pad}`);
   }
 });
 

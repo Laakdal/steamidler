@@ -40,7 +40,7 @@ The source layout, module by module, and how the idling state model works are in
 
 ## 5. Idling state model (`src/index.ts`)
 
-Each selected game is an `IdlingGame` in exactly one of three arrays, `idlingGames`, `pausingGames` or `pausedGames`, with its playtime banked by `bankElapsed()`; `docs/architecture.md` explains the model.
+Each selected game is an `IdlingGame` in exactly one of two arrays, `idlingGames` or `pausedGames`, with its playtime banked by `bankElapsed()`; `docs/architecture.md` explains the model.
 
 Guards that every code path changing the selection respects:
 

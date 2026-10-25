@@ -1,12 +1,10 @@
 import { MAX_IDLE_GAMES } from '../constants.js';
 
-export type SelectedState = 'idling' | 'cooldown' | 'paused';
+export type SelectedState = 'idling' | 'paused';
 export interface SelectedGameView {
   appid: number;
   name: string;
   state: SelectedState;
-  exempt: boolean;
-  cooldownEndsAt: Date | null;
 }
 export interface ControlPanel {
   library(): { appid: number; name: string }[];
@@ -104,35 +102,18 @@ export function runRemove(panel: ControlPanel, rawAppid: string): string {
   return `⏹️ Stopped idling ${game.name} (until steamidler restarts).`;
 }
 
-// Mirrors the daemon's "2h 05m" duration style for cooldown countdowns.
-function formatDuration(ms: number): string {
-  const totalMinutes = Math.max(0, Math.floor(ms / 60000));
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return hours > 0 ? `${hours}h ${String(minutes).padStart(2, '0')}m` : `${minutes}m`;
-}
-
 // Builds the plain-text /status reply; escaping is left to the send layer.
-export function formatStatus(panel: ControlPanel, now: Date): string {
+export function formatStatus(panel: ControlPanel): string {
   const sel = panel.selection();
   const idling = sel.filter((g) => g.state === 'idling');
-  const cooldown = sel.filter((g) => g.state === 'cooldown');
   const paused = sel.filter((g) => g.state === 'paused');
-  const exempt = sel.filter((g) => g.exempt);
   const lines: string[] = [];
   const section = (title: string, rows: string[]) => {
     if (rows.length === 0) return;
     lines.push(`${title} (${rows.length})`, ...rows.map((r) => `• ${r}`), '');
   };
   section('Idling', idling.map((g) => g.name));
-  section(
-    'Cooldown',
-    cooldown.map((g) =>
-      g.cooldownEndsAt ? `${g.name} — ${formatDuration(g.cooldownEndsAt.getTime() - now.getTime())} left` : g.name,
-    ),
-  );
   section('Paused — playing elsewhere', paused.map((g) => g.name));
-  if (exempt.length > 0) lines.push(`Exempt: ${exempt.map((g) => `${g.name} ∞`).join(', ')}`, '');
   const waiting = panel.waitingReason();
   if (waiting !== null) lines.push(`Steam: disconnected — ${waiting}`, '');
   lines.push('Changes made here last until steamidler restarts; favorites are unchanged.');

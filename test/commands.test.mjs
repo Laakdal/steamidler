@@ -16,7 +16,7 @@ function fake({ library = [], selection = [], busy = null, waiting = null } = {}
     remove: (a) => calls.remove.push(a),
   };
 }
-const sel = (appid, name, extra = {}) => ({ appid, name, state: 'idling', exempt: false, cooldownEndsAt: null, ...extra });
+const sel = (appid, name, extra = {}) => ({ appid, name, state: 'idling', ...extra });
 const bigLib = (n) => Array.from({ length: n }, (_, i) => ({ appid: i + 1, name: `Game ${String(i + 1).padStart(2, '0')}` }));
 
 test('isAuthorized', () => {
@@ -108,27 +108,27 @@ test('runRemove success calls remove', () => {
   assert.deepEqual(p.calls.remove, [2]);
 });
 
-test('formatStatus lists sections, time left, waiting reason, and the restart note', () => {
-  const now = new Date('2026-01-01T00:00:00Z');
+test('formatStatus lists sections, waiting reason, and the restart note', () => {
   const p = fake({
     waiting: 'Logged in elsewhere',
     selection: [
       sel(1, 'Alpha'),
-      sel(2, 'Beta', { state: 'cooldown', cooldownEndsAt: new Date(now.getTime() + (2 * 60 + 5) * 60000) }),
       sel(3, 'Gamma', { state: 'paused' }),
-      sel(4, 'Delta', { exempt: true }),
+      sel(4, 'Delta'),
     ],
   });
-  const s = m.formatStatus(p, now);
+  const s = m.formatStatus(p);
   assert.ok(s.includes('Idling (2)'));
-  assert.ok(s.includes('Cooldown (1)'));
-  assert.ok(s.includes('Beta — 2h 05m left'));
   assert.ok(s.includes('Paused — playing elsewhere (1)'));
-  assert.ok(s.includes('Exempt: Delta ∞'));
   assert.ok(s.includes('Steam: disconnected — Logged in elsewhere'));
   assert.ok(s.endsWith('Changes made here last until steamidler restarts; favorites are unchanged.'));
-  const q = m.formatStatus(fake({ selection: [sel(1, 'A')] }), now);
-  assert.ok(!q.includes('Cooldown') && !q.includes('Exempt') && !q.includes('Steam:'));
+  const q = m.formatStatus(fake({ selection: [sel(1, 'A')] }));
+  assert.ok(!q.includes('Steam:'));
+});
+
+test('status has no cooldown or exempt lines', () => {
+  const s = m.formatStatus(fake({ selection: [sel(1, 'Alpha'), sel(2, 'Beta', { state: 'paused' })] }));
+  assert.ok(!/cooldown|exempt|∞/i.test(s));
 });
 
 test('NOT_ALLOWED_REPLY', () => {

@@ -365,7 +365,7 @@ export class SteamClient {
   // Sets which games are currently being idled (max 32)
   setGamesPlaying(appIds: number[]): void {
     // No-op on a transient logged-out/disconnected race rather than throwing:
-    // these calls fire from timer/event callbacks (tickRandomizer, playingState),
+    // these calls fire from timer/event callbacks (playingState),
     // and restoreIdling re-sends the full list on reconnect, so state re-syncs on
     // its own. Throwing here would bubble to the global handleCrash net.
     if (!this._isLoggedIn || !this.isConnected) {

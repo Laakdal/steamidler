@@ -43,7 +43,7 @@ function makePanel(libraryNames = ['Portal', 'Portal 2', 'Dota'], selectedIds = 
   return {
     added: [], removed: [],
     library: () => library,
-    selection: () => selected.map((id) => ({ appid: id, name: library.find((g) => g.appid === id).name, state: 'idling', exempt: false, cooldownEndsAt: null })),
+    selection: () => selected.map((id) => ({ appid: id, name: library.find((g) => g.appid === id).name, state: 'idling' })),
     busyReason: () => null,
     waitingReason: () => null,
     add(id) { this.added.push(id); selected.push(id); },

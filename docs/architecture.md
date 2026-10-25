@@ -35,12 +35,11 @@ The Discord features each have a design that explains how their modules fit toge
 
 ## Idling state model (`src/index.ts`)
 
-Each selected game is an `IdlingGame` in exactly one of three arrays:
+Each selected game is an `IdlingGame` in exactly one of two arrays:
 
 - `idlingGames`: currently sent to Steam via `client.setGamesPlaying(...)`.
-- `pausingGames`: in randomizer cooldown (`pauseUntil` set).
 - `pausedGames`: frozen because another device is playing that game (`playingBlocked`).
 
-Playtime bookkeeping: `accumulatedMs` plus the live delta since `startTime`. `bankElapsed()` folds the delta in and is idempotent, so overlapping freeze paths cannot double-count. `nextPauseAtMs === null` marks the exempt game (no cooldowns).
+Playtime bookkeeping: `accumulatedMs` plus the live delta since `startTime`. `bankElapsed()` folds the delta in and is idempotent, so overlapping freeze paths cannot double-count.
 
 The guards every selection change respects, and what to do after changing the arrays, are in [AGENTS.md](../AGENTS.md) §5.
