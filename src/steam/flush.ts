@@ -120,7 +120,8 @@ export class Flush {
 
   // Mitigation B: confirm the server's playtime is actually climbing for a
   // continuously-idled app. If a full window passes with no increase, commits are
-  // silently dying (zombie session) → alert + force a relog. Self-reschedules.
+  // silently dying (zombie session) → alert + force a relog. scheduleZombieCheck
+  // re-arms it.
   async runZombieCheck(): Promise<void> {
     const rt = this.rt;
     if (isFrozen(rt) || rt.isInEditMode || rt.isShuttingDown || rt.selfInitiatedRelog || !rt.client.isConnected) {

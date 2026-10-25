@@ -49,6 +49,8 @@ Find the matching row by what Discord said and what `systemctl status steamidler
 
 Exit status 0 after a plain "🛑 Idling stopped" is a normal stop (`systemctl stop`, a reboot).
 
+"⚠️ Could not save the game selection" does not stop anything: idling carries on, but the change is lost at the next restart. The usual cause is a `~/.steam-idler/` folder or file the service user cannot write, for example one created by a `sudo` run. Check with `ls -la ~steamidler/.steam-idler/`, give the files back with `sudo chown -R steamidler: ~steamidler/.steam-idler`, then make the change again.
+
 ## Discord problems
 
 Discord problems never stop idling; they only stop the messages, commands or status box.
@@ -87,6 +89,14 @@ sudo systemctl restart steamidler
 
 Watch the log for a minute afterwards, and check that "▶️ Idling started" arrives.
 
+Updating from v0.1.0: the selection now lives in `selection-<account>.json`. On the first start your old favorites become the selection. If you never starred favorites, the first start stops with "No games selected": run it interactively once as the service user, pick games, quit, and start the service.
+
 ## Roll back
 
-Run the same commands with the previous tag in place of the new one. Your files in `~/.steam-idler/` carry over. Going back to v0.1.0 is safe: it ignores the status channel setting, so the status box simply stops updating.
+Run the same commands with the previous tag in place of the new one. Your files in `~/.steam-idler/` carry over.
+
+Going back to v0.1.0 changes behaviour:
+- v0.1.0 reads only `favorites-<account>.json`. It idles the favorites from before the update and ignores every pick and `/add` since. With no favorites file it stops with "No favorites configured".
+- It brings back the randomizer and sets your Steam status to Online again.
+- It ignores the status channel setting, so the status box stops updating.
+- Updating forward again uses `selection-<account>.json` and ignores any favorites changed in the meantime.

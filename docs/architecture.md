@@ -10,9 +10,10 @@ src/
   cli.ts                    parseArgs and main: help, version, logout, --setup-discord, then headless or interactive start
   start.ts                  App; headless and interactive start, login, startIdling and the Steam event handlers
   runtime.ts                Runtime: the shared context (Steam client, notifier, session, timers, guard flags)
-  session.ts                Session: the idling and paused games, banking, applying a selection, block and unblock
+  session.ts                Session: the idling, paused and missing games, banking, applying a selection, block and unblock
   timers.ts                 Timers: every timer by name, so shutdown clears them all in one call
-  selection.ts              installSelection: applies a selection for the E selector and Discord commands alike
+  selection.ts              installSelection: applies a selection for the E selector and Discord commands alike, then saves it;
+                            saveCurrentSelection: the save with its once-per-failure-streak Discord warning
   shutdown.ts               createShutdown: the shutdown, crash and unhandled-rejection paths; shutdown and crash end in rt.exit
   constants.ts              MAX_IDLE_GAMES (32), IS_HEADLESS
   steam/client.ts           SteamClient wrapper around steam-user (gamesPlayed, events, reconnect tracking)
@@ -45,10 +46,13 @@ The Discord features each have a design that explains how their modules fit toge
 
 ## Idling state model (`src/session.ts`, driven from `src/start.ts`)
 
-Each selected game is an `IdlingGame` in exactly one of two lists of `rt.session`:
+Each selected game is in exactly one of three lists of `rt.session`:
 
 - `idling`: currently sent to Steam via `client.setGamesPlaying(...)`.
 - `paused`: frozen because another device is playing that game (`session.blocked`).
+- `missing`: saved but not in the library right now (a late family-shared license, a withdrawn loan). Never sent to Steam, shown only in the picker and `/status`, counted in the 32-game cap, and kept in the saved selection until the owner removes it.
+
+`session.selection()` and `session.toSaved()` cover all three. `installSelection` (`src/selection.ts`) saves the selection after every change.
 
 Playtime bookkeeping: `accumulatedMs` plus the live delta since `startTime`. `session.bank()` folds the delta in and is idempotent, so overlapping freeze paths cannot double-count. The guard flags (`isWaitingForResume`, `isInEditMode`, `isShuttingDown`, `idlingStartedAt`) live on the shared `Runtime`.
 

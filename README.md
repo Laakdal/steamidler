@@ -142,6 +142,7 @@ To turn it on, run `--setup-discord` again, pick a channel at **Live status chan
 | 🛑 Idling stopped | Quit, crash, unrecoverable error, or a failed headless start |
 | ⚠️ Discord bot offline | Sent through the backup webhook when the bot's token is rejected, it loses access to the channel, or it has been disconnected from Discord for 2 minutes. Notifications keep coming through the webhook. |
 | ✅ Discord bot back online | The bot reconnected after an outage; commands work again |
+| ⚠️ Could not save the game selection | A change to the selection could not be written to `~/.steam-idler/`. Idling carries on, but a restart would forget the change. Sent once until a save works again. See the [runbook](docs/runbook.md#when-it-stops) |
 
 Messages are plain text with mentions disabled; long reports are split to fit Discord's 2000-character limit. Without a backup webhook, notifications the bot cannot deliver go to the console (the systemd journal when running as a service).
 
@@ -165,7 +166,7 @@ All state is stored in `~/.steam-idler/`:
 └── discord-status.json       # Which message is the live status box (no secrets)
 ```
 
-An older `favorites-<account>.json` is read once, only when there is no `selection-<account>.json` yet, and its games become the starting selection; the file is then left alone. A selection file that cannot be read is renamed to `selection-<account>.json.invalid` and steamidler starts as if nothing were saved.
+An older `favorites-<account>.json` is read once, only when there is no `selection-<account>.json` yet, and its games become the starting selection; the file is then left alone. A selection file that cannot be read is renamed to `selection-<account>.json.invalid`, and steamidler starts as if there were no selection file: from the old favorites file if it is still there, otherwise with nothing selected.
 
 `credentials.json` and `discord.json` contain secrets in plain text and are written with owner-only permissions on Linux. Do not share or commit them.
 
@@ -248,7 +249,7 @@ npx pnpm@10.34.6 build    # Type-check and compile to dist/
 npm run dev               # Build, then start interactive mode
 ```
 
-The project is TypeScript (ES modules, strict mode) with no test suite; a successful build is the only automated check. How the code is laid out is in [docs/architecture.md](docs/architecture.md), how to build, test and release in [docs/development.md](docs/development.md), and project rules in [AGENTS.md](AGENTS.md). [docs/status.md](docs/status.md) and [docs/roadmap.md](docs/roadmap.md) say where the project stands and what may come next. Security: [SECURITY.md](SECURITY.md) for the overview and reporting, [SECURITY-AUDIT.md](SECURITY-AUDIT.md) for the full audit. Background notes on Steam behavior are in [docs/](docs/).
+The project is TypeScript (ES modules, strict mode) with an offline test suite in `test/` (`npx pnpm@10.34.6 test`), which GitHub runs on every push to `main` and `dev`. How the code is laid out is in [docs/architecture.md](docs/architecture.md), how to build, test and release in [docs/development.md](docs/development.md), and project rules in [AGENTS.md](AGENTS.md). [docs/status.md](docs/status.md) and [docs/roadmap.md](docs/roadmap.md) say where the project stands and what may come next. Security: [SECURITY.md](SECURITY.md) for the overview and reporting, [SECURITY-AUDIT.md](SECURITY-AUDIT.md) for the full audit. Background notes on Steam behavior are in [docs/](docs/).
 
 ## Disclaimer
 

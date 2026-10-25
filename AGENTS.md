@@ -41,7 +41,7 @@ The source layout, module by module, and how the idling state model works are in
 
 ## 5. Idling state model (`src/session.ts`)
 
-Each selected game is an `IdlingGame` in exactly one of two arrays, `session.idling` or `session.paused`, with its playtime banked by `session.bank()`; `docs/architecture.md` explains the model. The `rt.*` flags live on the shared `Runtime` (`src/runtime.ts`); each is set by one module.
+Each selected game is in exactly one of three lists: `session.idling` or `session.paused` (an `IdlingGame`, with its playtime banked by `session.bank()`), or `session.missing` (saved but not in the library right now: never sent to Steam, but counted in the 32-game cap and kept in the saved selection). `installSelection` saves the selection after every apply. `docs/architecture.md` explains the model. The `rt.*` flags live on the shared `Runtime` (`src/runtime.ts`); each is set by one module.
 
 Guards that every code path changing the selection respects:
 

@@ -8,7 +8,7 @@ Agents hand the owner the relevant checklist and never run these themselves (`AG
 
 **Last passed:** not recorded.
 
-1. Update the VPS to this build. With the old `favorites-<account>.json` present and no selection file, the service starts and idles those games, and `selection-<account>.json` appears. (A favorites game that was missing from your library at that moment keeps a placeholder name `App <id>` in the file until the selection next changes.)
+1. Update the VPS to this build. With the old `favorites-<account>.json` present and no selection file, the service starts and idles those games, and `selection-<account>.json` appears. (A favorites game that was missing from your library at that moment keeps a placeholder name `App <id>` in the file until it is back in your library and the selection is saved again. If you never starred favorites, the first start stops with "No games selected": run it interactively once, pick games, quit, start the service.)
 2. `/add` a game, then restart the service: the game is still idling.
 3. Your Steam status, set in the Steam app, stays as you set it after a 4-hour relog.
 4. Hours on the Steam profile keep rising for 3+ hours, across one relog. (steamidler no longer sets the status Online; this checks that hours still count without it.)
