@@ -30,7 +30,7 @@ export class StatusView implements DisplayLoop {
     }, 60000);
   }
 
-  // Stops the 60s tick
+  // Stops the refresh loop (waiting, edit mode, shutdown)
   stop(): void {
     this.rt.timers.clear('display');
   }

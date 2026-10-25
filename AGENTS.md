@@ -8,7 +8,7 @@ When a doc disagrees with the code, trust the code, and fix the doc in the same 
 
 `steamidler` is a Node.js CLI and daemon that idles up to 32 Steam games at once to accumulate playtime. It runs interactively (keyboard UI with a game selector) or headless (`--headless`, resumes the saved selection, runs under systemd). The deployment target is headless on a Linux VPS; development and builds happen on a Windows PC.
 
-It started as a fork of `louisraetz/steamidled` v1.2.0 (commit `9f2b1ab`) and now lives at `github.com/Laakdal/steamidler` (version reset to 0.1.0). Changes since the fork:
+It started as a fork of `louisraetz/steamidled` v1.2.0 (commit `9f2b1ab`) and now lives at `github.com/Laakdal/steamidler` (version reset to 0.1.0). Every file taken from the fork has since been rewritten, so the code is this project's own and `LICENSE` names only Laakdal (`docs/superpowers/specs/2026-10-26-own-codebase-design.md`). Changes since the fork:
 
 - Upstream's notifications replaced by a Discord bot with a backup webhook (`src/discord/`, flag `--setup-discord`). The bot also takes `/add`, `/remove` and `/status` from the owner, and they change the saved selection.
 - The selected games are saved on every change and restored on every start; favorites, the randomizer and the forced Online status were removed; `src/index.ts` was split into modules; the tests live in `test/` with a GitHub Actions check.
@@ -47,7 +47,7 @@ Guards that every code path changing the selection respects:
 
 - `rt.isWaitingForResume` (`src/steam/resume.ts`): disconnected or kicked; clocks frozen, `restoreIdling()` re-sends the list.
 - `rt.isInEditMode` (`src/ui/keyboard.ts`): the TTY selector is open and overwrites the selection when it closes.
-- `session.blocked` (`src/session.ts`, driven by `handlePlayingState` in `src/start.ts`): Steam ignores `gamesPlayed` while another session plays; re-send after unblock.
+- `session.blocked` (`src/session.ts`, driven by `onPlayingState` in `src/start.ts`): Steam ignores `gamesPlayed` while another session plays; re-send after unblock.
 - `rt.isShuttingDown` (`src/shutdown.ts`): nothing repaints or changes state.
 - `rt.idlingStartedAt === null` (`startIdling` in `src/start.ts`): idling has not started yet.
 
@@ -69,7 +69,7 @@ The project was audited before first use; keep it auditable.
 - Commit only when the user asks or an approved plan's step says to. Push only when the user asks, naming the branches (`git push origin <branch>`); `--all` would publish the local `backup/*` branches.
 - The `backup/original-history-*` branches hold the upstream history. Keep them local, and delete no branch or tag without the user asking.
 - `git pull`, `reset --hard`, rebase and force-push only on the user's explicit request for that action.
-- Keep the upstream credit: the MIT notice in `LICENSE` and the credit line in `README.md`.
+- Copy code or text from another project only under a license that allows it, and add its notice to `LICENSE` in the same change. Facts and ideas (how steam-user behaves, what an EResult means) need no notice; copied code and wording do.
 - Run the app against the real Steam account, or contact Discord with real credentials, only when the user asks: it logs in and changes the account's playing state.
 
 ## 8. Everything else

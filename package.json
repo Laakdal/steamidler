@@ -1,7 +1,7 @@
 {
   "name": "steamidler",
   "version": "0.1.0",
-  "description": "Steam game idler CLI and daemon - idle games and accumulate playtime",
+  "description": "Idles up to 32 Steam games at once to collect playtime, interactively or as a headless service",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

@@ -2,7 +2,7 @@
 
 A command-line Steam game idler. It logs in to your Steam account and reports up to 32 games as being played, so they accumulate playtime and trading card drops without the games running. It can be used interactively or as a headless background service.
 
-Based on [steamidled](https://github.com/louisraetz/steamidled) by louisraetz (MIT).
+Inspired by [steamidled](https://github.com/louisraetz/steamidled) by louisraetz.
 
 ## Features
 

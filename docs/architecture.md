@@ -16,11 +16,13 @@ src/
                             saveCurrentSelection: the save with its once-per-failure-streak Discord warning
   shutdown.ts               createShutdown: the shutdown, crash and unhandled-rejection paths; shutdown and crash end in rt.exit
   constants.ts              MAX_IDLE_GAMES (32), IS_HEADLESS
-  steam/client.ts           SteamClient wrapper around steam-user (gamesPlayed, events, reconnect tracking)
+  steam/client.ts           SteamClient wrapper around steam-user (gamesPlayed, events, reconnect tracking, token renewal)
+  steam/library.ts          buildLibrary: tags each library game owned, free or family-shared from the license data
+  steam/eresults.ts         the EResult groups (dead token, terminal, rate limit, takeover) and their labels
   steam/auth.ts             QR / credentials / stored-token login (steam-session)
   steam/resume.ts           Resume: waiting after a disconnect or kick, logging back on, the paused/resumed notices
   steam/flush.ts            Flush: the 4-hour flush relog, the zombie watchdog and the post-takeover drift check
-  storage/                  ~/.steam-idler files: credentials, the saved selection (and the old favorites file, read once), atomic writes
+  storage/                  ~/.steam-idler files: paths.ts (the folder), credentials, the saved selection (and the old favorites file, read once), atomic writes
   discord/config.ts         discord.json load (validated every time) and save
   discord/format.ts         markdown escaping and 2000-character splitting
   discord/rest.ts           REST calls through fetch: channel posts, webhook posts, status box post/edit, command registration

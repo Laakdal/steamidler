@@ -516,3 +516,32 @@ steamidler no longer calls `setPersona`, so the status the owner sets in the Ste
 | Grep for `favorite`, `exempt`, `cooldown`, `randomizer`, `setPersona` | Only the migration code and its tests, `CHANGELOG.md`, older specs and plans, and the history sections of this file remain |
 
 **Not performed:** a live run against Steam and Discord. The "Saved selection" checklist in `docs/live-tests.md` is the owner's.
+
+## 19. Addendum — Own codebase: the remaining upstream code rewritten (2026-10-26)
+
+Every file still carrying steamidled v1.2.0 code or text was rewritten with the same behavior, so `LICENSE` now names only Laakdal. Design: `docs/superpowers/specs/2026-10-26-own-codebase-design.md`. Plan: `docs/superpowers/plans/2026-10-26-own-codebase.md`. Branch `rewrite-upstream`. No new dependency; `pnpm-lock.yaml` is unchanged. Sections 1 to 12 above audit the upstream code as it was; their file and line references describe v1.2.0, not this tree.
+
+### What changed, security-wise
+
+Nothing in the security model. Re-checked in the rewritten code:
+
+- **Secrets:** `credentials.json` is still written with `writeFileAtomic(path, data, 0o600)` and tightened to 0600 on load; the temp file is removed when a write fails (now `<file>.tmp-<pid>`, same folder). No log line prints a token: the save, load and renewal errors print the path or `err.message` only. New tests check that a failed save and a rejected file log no token text.
+- **Token validation on load** is unchanged: a refresh token must be a JWT issued by `steam` for the `client` audience with a string `sub`, or the file is deleted and treated as no login.
+- **Which failures delete the token** is unchanged (EResults 5, 15, 26, 27 and 126). The set now lives once, in `src/steam/eresults.ts`, shared by the stored login and the resume path.
+- **Outbound network** is unchanged: Steam through steam-user and steam-session, Discord as before.
+- **Config folder:** `src/storage/paths.ts` is now the one place that creates `~/.steam-idler/` (0700); `discord/config.ts`, `statusStore.ts`, `credentials.ts` and `selection.ts` use it instead of three copies.
+- `src/types/modules.d.ts` declares only what the code calls; `setPersona` is no longer declared, so a call to it would not compile.
+
+### Remaining overlap with upstream
+
+Measured line by line against `9f2b1ab` (trimmed lines of 12+ characters): 359 of the 3,594 such lines in `src/` still occur somewhere in upstream, against 1,544 of 3,783 on `dev` before the rewrite. They are imports, function and getter signatures kept so the modules' interfaces stay the same, steam-user option names, short generic statements (`return null;`, `} catch (err) {`), and user-visible strings kept on purpose so the README, runbook and tests stay true. The two research docs share no line with upstream.
+
+### Validation
+
+| Check | Outcome |
+|---|---|
+| `pnpm build` (`tsc`, strict) | Passed, 0 errors |
+| Offline tests (`npx pnpm@10.34.6 test`) | 297/297 passed (44 new characterization tests for the client, the login and the credentials file, written before the rewrite and passing against the old code first) |
+| `pnpm-lock.yaml` | Unchanged |
+
+**Not performed:** a live run. The Steam login (QR, password and Steam Guard), the reconnects and the 4-hour relog were rewritten, and only part of that is covered offline. Before a release, run the "Core idling" and "Saved selection" checklists in `docs/live-tests.md`, plus one interactive QR login and one password login.
