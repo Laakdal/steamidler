@@ -144,9 +144,10 @@ export async function runDiscordSetup(version: string): Promise<void> {
   console.log(`  ${inviteUrl(identity.applicationId)}\n`);
 
   if (identity.owners.length === 0) throw new Error('Could not find the owner of this application');
+  const [soleOwner] = identity.owners;
   const ownerId =
-    identity.owners.length === 1
-      ? identity.owners[0].id
+    identity.owners.length === 1 && soleOwner
+      ? soleOwner.id
       : await select({
           message: 'Who may control the bot?',
           choices: identity.owners.map((o) => ({ name: o.name, value: o.id })),
@@ -157,9 +158,10 @@ export async function runDiscordSetup(version: string): Promise<void> {
     console.log(chalk.yellow('  The bot is not in any server yet. Invite the bot, then run --setup-discord again.'));
     return;
   }
+  const [soleGuild] = guilds;
   const guildId =
-    guilds.length === 1
-      ? guilds[0].id
+    guilds.length === 1 && soleGuild
+      ? soleGuild.id
       : await select({ message: 'Server:', choices: guilds.map((g) => ({ name: g.name, value: g.id })) });
   if ((await guildOwnerId(token, guildId)) !== ownerId) {
     console.log(

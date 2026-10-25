@@ -360,7 +360,7 @@ export async function selectGames(
       if (str === 't' || str === 'T') {
         const focusedAppId = allGames[cursorIndex]?.appid;
         const idx = FILTER_CYCLE.indexOf(sourceFilter);
-        sourceFilter = FILTER_CYCLE[(idx + 1) % FILTER_CYCLE.length];
+        sourceFilter = FILTER_CYCLE[(idx + 1) % FILTER_CYCLE.length] ?? 'all';
 
         const visible = getVisibleGames();
         const refoundIndex =

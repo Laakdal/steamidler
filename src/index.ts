@@ -1254,12 +1254,12 @@ function handlePlayingState(blocked: boolean, playingApp: number): void {
     const idleIndex = idlingGames.findIndex((g) => g.appid === playingApp);
     if (idleIndex !== -1) {
       const [pausedGame] = idlingGames.splice(idleIndex, 1);
-      pausedGames.push(pausedGame);
+      if (pausedGame) pausedGames.push(pausedGame);
     } else {
       const coolingIndex = pausingGames.findIndex((g) => g.appid === playingApp);
       if (coolingIndex !== -1) {
         const [pausedGame] = pausingGames.splice(coolingIndex, 1);
-        pausedGames.push(pausedGame);
+        if (pausedGame) pausedGames.push(pausedGame);
       }
     }
   } else {

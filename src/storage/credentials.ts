@@ -35,9 +35,10 @@ export function saveCredentials(credentials: StoredCredentials): boolean {
 // that would not pass its checks is treated as "no credentials" instead.
 function isSteamRefreshToken(token: string): boolean {
   const segments = token.split('.');
-  if (segments.length !== 3) return false;
+  const body = segments[1];
+  if (segments.length !== 3 || body === undefined) return false;
   try {
-    const payload = JSON.parse(Buffer.from(segments[1], 'base64url').toString('utf-8')) as {
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf-8')) as {
       iss?: unknown;
       aud?: unknown;
       sub?: unknown;
