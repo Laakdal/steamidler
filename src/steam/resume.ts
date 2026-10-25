@@ -79,8 +79,10 @@ export class Resume {
 
   // Announces a pause once per outage episode: delayed so a blip that reconnects
   // within the grace window stays silent, and never repeated while an announced
-  // episode is still flapping (kicked again inside the resume grace).
+  // episode is still flapping (kicked again inside the resume grace). Never after
+  // a shutdown cleared the timers (a failed flush relog login can land then).
   private schedulePauseNotification(reason: string): void {
+    if (this.rt.isShuttingDown) return;
     if (this.pauseNotified || this.rt.timers.has('pauseNotify')) return;
     this.pauseEpisodeStart = Date.now();
     this.rt.timers.timeout('pauseNotify', () => {

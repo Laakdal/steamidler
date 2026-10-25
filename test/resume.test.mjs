@@ -295,3 +295,23 @@ test('a login failing after shutdown does not re-arm resume', async () => {
     assert.equal(rt.timers.has('resume'), false, failure.message);
   }
 });
+
+test('a failed flush relog after shutdown does not arm the pause notice', async () => {
+  const { rt, client, resume } = setup();
+  let fail;
+  client.loginImpl = () => new Promise((_, reject) => { fail = reject; });
+  // A flush relog's disconnect: no pause notice is scheduled while it is quiet
+  rt.selfInitiatedRelog = true;
+  client.isConnected = false;
+  resume.enterWaiting('flushing playtime (scheduled relog)');
+  mock.timers.tick(60 * SEC);
+  await settle();
+  assert.equal(client.logins.length, 1);
+
+  // The user quits while the login is in flight, then it fails
+  rt.isShuttingDown = true;
+  rt.timers.clearAll();
+  fail(new Error('ETIMEDOUT'));
+  await settle();
+  assert.equal(rt.timers.has('pauseNotify'), false);
+});
